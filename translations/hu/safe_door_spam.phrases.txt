@@ -1,0 +1,12 @@
+"Phrases"
+{
+	"Door_Open"
+	{
+		"hu"		"{olive}[Menedékház] {white}kinyitotta: {orange}%N"
+	}
+
+	"Door_Close"
+	{
+		"hu"		"{olive}[Menedékház] {white}bezárta: {orange}%N"
+	}
+}
