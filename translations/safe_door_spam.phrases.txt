@@ -9,4 +9,14 @@
 	{
 		"en"		"{olive}[Saferoom] {white}closed by {orange}%N"
 	}
+
+	"Door_Wait"
+	{
+		"en"		"{olive}[Saferoom] {white}door will unlock in {orange}%d {white}seconds"
+	}
+
+	"Door_Unlocked"
+	{
+		"en"		"{olive}[Saferoom] {white}door {orange}opened"
+	}
 }

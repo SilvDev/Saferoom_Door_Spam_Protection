@@ -1,6 +1,6 @@
 /*
 *	Saferoom Door Spam Protection
-*	Copyright (C) 2021 Silvers
+*	Copyright (C) 2022 Silvers
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -18,23 +18,32 @@
 
 
 
-#define PLUGIN_VERSION		"1.18"
+#define PLUGIN_VERSION		"1.19"
 
 /*=======================================================================================
 	Plugin Info:
 
 *	Name	:	[L4D & L4D2] Saferoom Door Spam Protection
 *	Author	:	SilverShot
-*	Descrp	:	Only allows the first saferoom door to be opened once and prevents spamming the last door.
+*	Descrp	:	Control opening of first saferoom door prevent spamming the last door.
 *	Link	:	https://forums.alliedmods.net/showthread.php?t=324394
 *	Plugins	:	https://sourcemod.net/plugins.php?exact=exact&sortby=title&search=1&author=Silvers
 
 ========================================================================================
 	Change Log:
 
+1.19 (08-May-2022)
+	- Added cvars "l4d_safe_spam_fall_touch" and "l4d_safe_spam_fall_touch_2" to determine how long after someone tries to open the first saferoom door before it falls.
+	- Added cvars "l4d_safe_spam_lock" and "l4d_safe_spam_lock_2" to determine how long the first saferoom door should remain locked after round start.
+	- Both cvars allow for setting the time on the second round of versus and for round restarts in coop.
+	- Changed cvar "l4d_safe_spam_hint" to allow showing hints when the saferoom door is automatically opened.
+	- Thanks to "Voevoda" for the feature requests and lots of help testing.
+
+	- Translation files updated. Thanks to "KasperH" and "Voevoda" for updating the Hungarian and Russian translations respectively.
+
 1.18 (01-Sep-2021)
-	- Fixed a 2nd door dropping when used enough Thanks to "Primeas" for reporting.
-	- Fixed "in solid list (not solid)" server console spam. Thanks to Tonblader for reporting.
+	- Fixed a 2nd door dropping when used enough. Thanks to "Primeas" for reporting.
+	- Fixed "in solid list (not solid)" server console spam. Thanks to "Tonblader" for reporting.
 
 1.17 (26-Aug-2021)
 	- Fixed the door sometimes interfering instead of being non-solid. Thanks to "Ja-Forces" for reporting.
@@ -120,6 +129,7 @@
 #pragma semicolon 1
 
 #include <sourcemod>
+#include <sdkhooks>
 #include <sdktools>
 
 #define CVAR_FLAGS				FCVAR_NOTIFY
@@ -146,10 +156,10 @@
 #define MODEL_STANDM			"models/lighthouse/checkpoint_door_lighthouse01_metal.mdl"
 
 
-ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarHint, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime;
-bool g_bCvarAllow, g_bMapStarted, g_bMapBlocked, g_bLeft4Dead2, g_bGameStart, g_bOpened;
-int g_iRoundStart, g_iPlayerSpawn, g_iSafeDoor, g_iDoorType[2048], g_iLastDoor[MAX_DOORS], g_iLastFlags[MAX_DOORS], g_iCvarHint, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor;
-float g_fLastDoor, g_fCvarPhysics, g_fCvarTimeClose, g_fCvarTimeOpen, g_fCvarFallTime;
+ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarHint, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarFallTouch, g_hCvarFallTouch2;
+bool g_bCvarAllow, g_bMapStarted, g_bMapBlocked, g_bLeft4Dead2, g_bGameStart, g_bRestarted, g_bOpened, g_bTimer, g_bBlock;
+int g_iRoundStart, g_iPlayerSpawn, g_iSafeDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastDoor[MAX_DOORS], g_iLastFlags[MAX_DOORS], g_iCvarHint, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor;
+float g_fLastDoor, g_fTimeLock, g_fTimeFall, g_fUseTime, g_fCvarPhysics, g_fCvarTimeClose, g_fCvarLock, g_fCvarLock2, g_fCvarTimeOpen, g_fCvarFallTime, g_fCvarFallTouch, g_fCvarFallTouch2;
 Handle g_hTimerFall, g_hLastTimer[MAX_DOORS];
 
 bool g_bSaferoomLocked; // Prevent forcing doors shut when another plugin is doing so. This prevents a recursive loop between the plugins causing a memory leak - This was prevalent in the old version using RequestFrame.
@@ -172,7 +182,7 @@ public Plugin myinfo =
 {
 	name = "[L4D & L4D2] Saferoom Door Spam Protection",
 	author = "SilverShot",
-	description = "Only allows the first saferoom door to be opened once and prevents spamming the last door.",
+	description = "Control opening of first saferoom door prevent spamming the last door.",
 	version = PLUGIN_VERSION,
 	url = "https://forums.alliedmods.net/showthread.php?t=324394"
 }
@@ -203,8 +213,12 @@ public void OnPluginStart()
 	g_hCvarModesOff =	CreateConVar(	"l4d_safe_spam_modes_off",		"",				"Turn off the plugin in these game modes, separate by commas (no spaces). (Empty = none).", CVAR_FLAGS);
 	g_hCvarModesTog =	CreateConVar(	"l4d_safe_spam_modes_tog",		"0",			"Turn on the plugin in these game modes. 0=All, 1=Coop, 2=Survival, 4=Versus, 8=Scavenge. Add numbers together.", CVAR_FLAGS);
 	g_hCvarFallTime =	CreateConVar(	"l4d_safe_spam_fall_time",		"20.0",			"0.0=Off. How many seconds after round start until the locked saferoom door will automatically fall.", CVAR_FLAGS);
-	g_hCvarHint =		CreateConVar(	"l4d_safe_spam_hint",			"1",			"0=Off. 1=Display a message showing who opened or closed the saferoom door.", CVAR_FLAGS);
+	g_hCvarFallTouch =	CreateConVar(	"l4d_safe_spam_fall_touch",		"0.0",			"0.0=Off. How many seconds after attempting to open the locked saferoom door until it will fall (overrides the _time cvar).", CVAR_FLAGS);
+	g_hCvarFallTouch2 =	CreateConVar(	"l4d_safe_spam_fall_touch_2",	"0.0",			"0.0=Off. How many seconds after attempting to open the locked saferoom door until it will fall (overrides the _time cvar). For the second+ round of a map.", CVAR_FLAGS);
+	g_hCvarHint =		CreateConVar(	"l4d_safe_spam_hint",			"3",			"0=Off. 1=Display a message showing who opened or closed the saferoom door. 2=Display a message when saferoom door is auto unlocked (_touch and _lock cvars). 3=Both.", CVAR_FLAGS);
 	g_hCvarLast =		CreateConVar(	"l4d_safe_spam_last",			"0",			"Final door state on round start: 0=Use map default. 1=Close last door. 2=Open last door.", CVAR_FLAGS);
+	g_hCvarLock =		CreateConVar(	"l4d_safe_spam_lock",			"30.0",			"0.0=Off. How many seconds after round start will the saferoom door remain locked.", CVAR_FLAGS);
+	g_hCvarLock2 =		CreateConVar(	"l4d_safe_spam_lock_2",			"10.0",			"0.0=Off. How many seconds after round start will the saferoom door remain locked. For the second+ round of a map.", CVAR_FLAGS);
 	g_hCvarOpen =		CreateConVar(	"l4d_safe_spam_open",			"2",			"0=Off, 1=Keep the first saferoom door open once opened, 2=Make the first saferoom door fall once opened.", CVAR_FLAGS);
 	g_hCvarPhysics =	CreateConVar(	"l4d_safe_spam_physics",		"3.0",			"0.0=Always has physics. How many seconds until the fallen doors physics are disabled.", CVAR_FLAGS);
 	if( g_bLeft4Dead2 )
@@ -223,9 +237,13 @@ public void OnPluginStart()
 	g_hCvarModesOff.AddChangeHook(ConVarChanged_Allow);
 	g_hCvarModesTog.AddChangeHook(ConVarChanged_Allow);
 	g_hCvarFallTime.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarFallTouch.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarFallTouch2.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarHint.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarLast.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarPhysics.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarLock.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarLock2.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarOpen.AddChangeHook(ConVarChanged_Cvars);
 	if( g_bLeft4Dead2 )
 		g_hCvarSkin.AddChangeHook(ConVarChanged_Cvars);
@@ -234,7 +252,7 @@ public void OnPluginStart()
 	g_hCvarType.AddChangeHook(ConVarChanged_Cvars);
 
 	RegAdminCmd("sm_door_drop", CmdDoorDrop, ADMFLAG_ROOT, "Test command to make a targeted door fall over (will likely only work correctly on Saferoom doors).");
-	RegAdminCmd("sm_door_fall", CmdDoorLast, ADMFLAG_ROOT, "Test command to make the first locked saferoom door fall over (will likely only work correctly on Saferoom doors).");
+	RegAdminCmd("sm_door_fall", CmdDoorLast, ADMFLAG_ROOT, "Test command to make the first locked saferoom door fall over.");
 }
 
 public Action CmdDoorDrop(int client, int args)
@@ -247,6 +265,7 @@ public Action CmdDoorDrop(int client, int args)
 		if( strncmp(sClass, "prop_door", 9) == 0 )
 		{
 			// OnFrameOpen(entity);
+			g_bBlock = false;
 			OnFirst("", entity, 0, 0.0);
 		}
 	}
@@ -262,7 +281,9 @@ public Action CmdDoorLast(int client, int args)
 		return Plugin_Handled;
 	}
 
+	g_bBlock = false;
 	OnFirst("", g_iLockedDoor, 0, 0.0);
+
 	ReplyToCommand(client, "Locked door %d dropped", g_iLockedDoor);
 
 	return Plugin_Handled;
@@ -305,6 +326,8 @@ void GetCvars()
 	g_iCvarHint = g_hCvarHint.IntValue;
 	g_iCvarLast = g_hCvarLast.IntValue;
 	g_fCvarPhysics = g_hCvarPhysics.FloatValue;
+	g_fCvarLock = g_hCvarLock.FloatValue;
+	g_fCvarLock2 = g_hCvarLock2.FloatValue;
 	g_iCvarOpen = g_hCvarOpen.IntValue;
 	if( g_bLeft4Dead2 )
 		g_iCvarSkin = g_hCvarSkin.IntValue;
@@ -312,6 +335,8 @@ void GetCvars()
 	g_fCvarTimeOpen = g_hCvarTimeOpen.FloatValue;
 	g_iCvarType = g_hCvarType.IntValue;
 	g_fCvarFallTime = g_hCvarFallTime.FloatValue;
+	g_fCvarFallTouch = g_hCvarFallTouch.FloatValue;
+	g_fCvarFallTouch2 = g_hCvarFallTouch2.FloatValue;
 
 	if( last != g_iCvarOpen )
 	{
@@ -328,8 +353,6 @@ void GetCvars()
 				UnhookSingleEntityOutput(g_iLastDoor[i], "OnClose", OnClose);
 			}
 		}
-
-		InitPlugin();
 	}
 }
 
@@ -455,7 +478,7 @@ void HookEvents(bool hook)
 		HookEvent("door_open",			Event_DoorOpen);
 		HookEvent("door_close",			Event_DoorClose);
 		if( g_bLeft4Dead2 )
-			HookEvent("player_use",			Event_PlayerUse);
+			HookEvent("player_use",		Event_PlayerUse);
 	}
 	else
 	{
@@ -531,12 +554,14 @@ public Action OnSoundHook(int clients[64], int &numClients, char sample[PLATFORM
 
 public void OnMapEnd()
 {
+	g_bRestarted = false;
 	g_bMapStarted = false;
 	ResetPlugin();
 }
 
 public void Event_RoundEnd(Event event, const char[] name, bool dontBroadcast)
 {
+	g_bRestarted = true;
 	ResetPlugin();
 }
 
@@ -544,11 +569,13 @@ void ResetPlugin()
 {
 	g_iRoundStart = 0;
 	g_iPlayerSpawn = 0;
-	g_bSaferoomLocked = false;
-	g_bGameStart = false;
+	g_fUseTime = 0.0;
+	g_bBlock = false;
 	g_bOpened = false;
+	g_bGameStart = false;
 	g_bSoundWatch = false;
 	g_bSoundHookDone = false;
+	g_bSaferoomLocked = false;
 
 	delete g_hTimerFall;
 
@@ -563,12 +590,15 @@ void ResetPlugin()
 }
 
 // Replace unlocking door sound
-public Action Event_PlayerUse(Event event, const char[] name, bool dontBroadcast)
+public void Event_PlayerUse(Event event, const char[] name, bool dontBroadcast)
 {
-	if( g_bSoundHookDone == false )
+	int entity = event.GetInt("targetid");
+	if( EntIndexToEntRef(entity) == g_iLockedDoor && GetEntProp(entity, Prop_Send, "m_bLocked") == 1 )
 	{
-		int entity = event.GetInt("targetid");
-		if( EntIndexToEntRef(entity) == g_iLockedDoor && GetEntProp(entity, Prop_Send, "m_bLocked") == 1 )
+		int client = GetClientOfUserId(event.GetInt("userid"));
+		OnUseEntity(entity, client, 0, Use_On, 0.0);
+
+		if( g_bSoundHookDone == false )
 		{
 			g_bSoundHookDone = true;
 
@@ -584,6 +614,103 @@ public Action Event_PlayerUse(Event event, const char[] name, bool dontBroadcast
 	}
 }
 
+public Action OnUseEntity(int entity, int client, int caller, UseType type, float value)
+{
+	if( entity > MaxClients && client && GetClientTeam(client) == 2 )
+	{
+		float gametime = GetGameTime();
+
+		// Door set to auto open after X seconds?
+		if( gametime < g_fTimeLock )
+		{
+			g_bBlock = true;
+
+			// Reset lock
+			if( !g_bTimer )
+			{
+				g_bTimer = true;
+				g_iFirstFlags = GetEntProp(entity, Prop_Send, "m_spawnflags");
+				CreateTimer(0.1, TimeResetFirst, _, TIMER_FLAG_NO_MAPCHANGE);
+			}
+
+			// Keep locked
+			AcceptEntityInput(entity, "Close");
+			AcceptEntityInput(entity, "Lock");
+
+			SetEntProp(entity, Prop_Send, "m_spawnflags", 36864); // Prevent +USE + Door silent
+
+			// Auto open after touch timer
+			if( g_hTimerFall == null )
+			{
+				float delay = g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch;
+				if( delay )
+				{
+					g_fTimeFall = g_fTimeLock + delay;
+					g_hTimerFall = CreateTimer(delay + (g_fTimeLock - gametime), HandleAutoFallTimer, false, TIMER_FLAG_NO_MAPCHANGE);
+				}
+			}
+
+			// Delay until open
+			if( g_fUseTime != gametime )
+			{
+				g_fUseTime = gametime;
+
+				float delay = g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch;
+				CPrintToChat(client, "%T", "Door_Wait", client, RoundToCeil(g_fTimeLock - gametime + delay));
+			}
+		}
+		// Door set to auto open after X seconds when someone tries to open?
+		else if( g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch )
+		{
+			g_bBlock = true;
+
+			// Reset lock
+			if( !g_bTimer )
+			{
+				g_bTimer = true;
+				g_iFirstFlags = GetEntProp(entity, Prop_Send, "m_spawnflags");
+				CreateTimer(0.1, TimeResetFirst, _, TIMER_FLAG_NO_MAPCHANGE);
+			}
+
+			// Keep locked
+			AcceptEntityInput(entity, "Close");
+			AcceptEntityInput(entity, "Lock");
+
+			SetEntProp(entity, Prop_Send, "m_spawnflags", 36864); // Prevent +USE + Door silent
+
+			// Auto open after touch timer
+			if( g_hTimerFall == null )
+			{
+				float delay = g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch;
+				g_fTimeFall = gametime + delay;
+				g_hTimerFall = CreateTimer(delay, HandleAutoFallTimer, false, TIMER_FLAG_NO_MAPCHANGE);
+			}
+
+			// Delay until open
+			if( g_fUseTime != gametime )
+			{
+				g_fUseTime = gametime;
+
+				float time = g_fTimeFall - gametime;
+				if( time < 0.0 ) time = 0.0;
+
+				CPrintToChat(client, "%T", "Door_Wait", client, RoundToCeil(time));
+			}
+		}
+
+		// else if( !g_bTimer )
+		if( !g_bTimer )
+		{
+			g_bBlock = false;
+			SDKUnhook(entity, SDKHook_Use, OnUseEntity);
+		}
+
+		return Plugin_Handled;
+	}
+
+	return Plugin_Continue;
+}
+
 public Action TimerRemoveSoundHook(Handle timer)
 {
 	if( g_bSoundHooked )
@@ -592,9 +719,11 @@ public Action TimerRemoveSoundHook(Handle timer)
 		g_bSoundHooked = false;
 		g_bSoundWatch = false;
 	}
+
+	return Plugin_Continue;
 }
 
-public Action Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
+public void Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
 {
 	if( g_fCvarFallTime && g_iCvarOpen != 1 )
 	{
@@ -623,7 +752,7 @@ public void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
 
 public void Event_DoorOpen(Event event, const char[] name, bool dontBroadcast)
 {
-	if( event.GetBool("checkpoint") )
+	if( !g_bBlock && event.GetBool("checkpoint") )
 	{
 		DoorPrint(event, true);
 		g_bOpened = true;
@@ -632,20 +761,20 @@ public void Event_DoorOpen(Event event, const char[] name, bool dontBroadcast)
 
 public void Event_DoorClose(Event event, const char[] name, bool dontBroadcast)
 {
-	if( event.GetBool("checkpoint") )
+	if( !g_bBlock && event.GetBool("checkpoint") )
 		DoorPrint(event, false);
 }
 
 void DoorPrint(Event event, bool open)
 {
-	if( g_iCvarHint && g_fLastDoor < GetGameTime() + 0.05 )
+	if( g_iCvarHint & 1 && g_fLastDoor < GetGameTime() + 0.05 )
 	{
 		int client = GetClientOfUserId(event.GetInt("userid"));
 		if( client )
 		{
 			for( int i = 1; i <= MaxClients; i++ )
 			{
-				if( IsClientInGame(i) )
+				if( IsClientInGame(i) && !IsFakeClient(i) )
 				{
 					CPrintToChat(i, "%T", open ? "Door_Open" : "Door_Close", i, client);
 				}
@@ -663,9 +792,11 @@ void InitPlugin()
 {
 	g_bGameStart = true;
 	g_bOpened = false;
+	g_bTimer = false;
 	g_fLastDoor = 0.0;
 	g_iSafeDoor = 0;
 	g_iLockedDoor = -1;
+	g_fTimeLock = GetGameTime() + (g_bRestarted ? g_fCvarLock2 : g_fCvarLock);
 
 	for( int i = 0; i < MAX_DOORS; i++ )
 	{
@@ -682,7 +813,6 @@ void InitPlugin()
 		{
 			start = true;
 			GetClientAbsOrigin(i, vStart);
-			break;
 		}
 	}
 
@@ -775,6 +905,11 @@ void InitPlugin()
 						} else {
 							HookSingleEntityOutput(entity, "OnOpen", OnFirst);
 						}
+					}
+
+					if( (g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch) || (g_bRestarted ? g_fCvarLock2 : g_fCvarLock) )
+					{
+						SDKHook(g_iSafeDoor, SDKHook_Use, OnUseEntity);
 					}
 				}
 			}
@@ -882,20 +1017,39 @@ void MoveSideway(const float vPos[3], const float vAng[3], float vReturn[3], flo
 // ====================================================================================================
 public void ReadyToFallLockedDoor()
 {
+	if( g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch ) return;
 	if( g_iLockedDoor == -1 || EntRefToEntIndex(g_iLockedDoor) == INVALID_ENT_REFERENCE ) return;
 
 	delete g_hTimerFall;
-	g_hTimerFall = CreateTimer(g_fCvarFallTime, HandleAutoFallTimer, _, TIMER_FLAG_NO_MAPCHANGE);
+	g_hTimerFall = CreateTimer(g_fCvarFallTime, HandleAutoFallTimer, true, TIMER_FLAG_NO_MAPCHANGE);
 }
 
-public Action HandleAutoFallTimer(Handle timer)
+public Action HandleAutoFallTimer(Handle timer, bool main)
 {
 	if( g_iCvarOpen != 1 && g_iLockedDoor != -1 && !g_bOpened && !g_bMapBlocked && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
 	{
+		g_bTimer = false;
+		g_bBlock = false;
+
+		SDKUnhook(g_iLockedDoor, SDKHook_Use, OnUseEntity);
+
+		if( !main && g_iCvarHint & 2 )
+		{
+			for( int i = 1; i <= MaxClients; i++ )
+			{
+				if( IsClientInGame(i) && !IsFakeClient(i) )
+				{
+					CPrintToChat(i, "%T", "Door_Unlocked", i);
+				}
+			}
+		}
+
 		OnFirst("", g_iLockedDoor, 0, 0.0);
 	}
 
 	g_hTimerFall = null;
+
+	return Plugin_Continue;
 }
 
 
@@ -912,6 +1066,14 @@ public void OnFirst(const char[] output, int entity, int activator, float delay)
 // {
 	// entity = EntRefToEntIndex(entity);
 	// if( entity == INVALID_ENT_REFERENCE ) return;
+
+	// Prevent opening if holding +USE and supposed to be blocked
+	if( g_bBlock )
+	{
+		AcceptEntityInput(entity, "Close");
+		AcceptEntityInput(entity, "Lock");
+		return;
+	}
 
 	char sModel[64];
 	GetEntPropString(entity, Prop_Data, "m_ModelName", sModel, sizeof(sModel));
@@ -1063,6 +1225,22 @@ public Action TimeReset(Handle timer, int index)
 		SetEntProp(g_iLastDoor[index], Prop_Send, "m_spawnflags", g_iLastFlags[index]);
 
 	g_hLastTimer[index] = null;
+
+	return Plugin_Continue;
+}
+
+public Action TimeResetFirst(Handle timer, int index)
+{
+	if( g_bTimer )
+	{
+		g_bTimer = false;
+
+		if( g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
+		{
+			SetEntProp(g_iLockedDoor, Prop_Send, "m_spawnflags", g_iFirstFlags);
+		}
+	}
+	return Plugin_Continue;
 }
 
 /* OLD METHOD: Kept for demonstration purposes.
