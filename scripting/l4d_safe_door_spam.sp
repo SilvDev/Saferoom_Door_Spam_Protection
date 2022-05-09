@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.19"
+#define PLUGIN_VERSION		"1.20"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,11 @@
 
 ========================================================================================
 	Change Log:
+
+1.20 (09-May-2022)
+	- Fixed the saferoom door not unlocking when the "l4d_safe_spam_fall_touch" cvars are 0.0.
+	- Fixed the saferoom door auto falling before the timer expires when only using the "l4d_safe_spam_lock" cvars.
+	- Time hint until unlocked is now only displayed once per second. These hints are only shown to the user attempting to open the saferoom door.
 
 1.19 (08-May-2022)
 	- Added cvars "l4d_safe_spam_fall_touch" and "l4d_safe_spam_fall_touch_2" to determine how long after someone tries to open the first saferoom door before it falls.
@@ -158,7 +163,7 @@
 
 ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarHint, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarFallTouch, g_hCvarFallTouch2;
 bool g_bCvarAllow, g_bMapStarted, g_bMapBlocked, g_bLeft4Dead2, g_bGameStart, g_bRestarted, g_bOpened, g_bTimer, g_bBlock;
-int g_iRoundStart, g_iPlayerSpawn, g_iSafeDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastDoor[MAX_DOORS], g_iLastFlags[MAX_DOORS], g_iCvarHint, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor;
+int g_iRoundStart, g_iPlayerSpawn, g_iSafeDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastDoor[MAX_DOORS], g_iLastFlags[MAX_DOORS], g_iCvarHint, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor, g_iHint[MAXPLAYERS+1];
 float g_fLastDoor, g_fTimeLock, g_fTimeFall, g_fUseTime, g_fCvarPhysics, g_fCvarTimeClose, g_fCvarLock, g_fCvarLock2, g_fCvarTimeOpen, g_fCvarFallTime, g_fCvarFallTouch, g_fCvarFallTouch2;
 Handle g_hTimerFall, g_hLastTimer[MAX_DOORS];
 
@@ -577,6 +582,11 @@ void ResetPlugin()
 	g_bSoundHookDone = false;
 	g_bSaferoomLocked = false;
 
+	for( int i = 1; i <= MaxClients; i++ )
+	{
+		g_iHint[i] = 0;
+	}
+
 	delete g_hTimerFall;
 
 	for( int i = 0; i < MAX_DOORS; i++ )
@@ -595,8 +605,11 @@ public void Event_PlayerUse(Event event, const char[] name, bool dontBroadcast)
 	int entity = event.GetInt("targetid");
 	if( EntIndexToEntRef(entity) == g_iLockedDoor && GetEntProp(entity, Prop_Send, "m_bLocked") == 1 )
 	{
-		int client = GetClientOfUserId(event.GetInt("userid"));
-		OnUseEntity(entity, client, 0, Use_On, 0.0);
+		if( g_bBlock && (GetGameTime() < g_fTimeLock || g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch) )
+		{
+			int client = GetClientOfUserId(event.GetInt("userid"));
+			OnUseEntity(entity, client, 0, Use_On, 0.0);
+		}
 
 		if( g_bSoundHookDone == false )
 		{
@@ -656,7 +669,12 @@ public Action OnUseEntity(int entity, int client, int caller, UseType type, floa
 				g_fUseTime = gametime;
 
 				float delay = g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch;
-				CPrintToChat(client, "%T", "Door_Wait", client, RoundToCeil(g_fTimeLock - gametime + delay));
+				int secs = RoundToCeil(g_fTimeLock - gametime + delay);
+				if( secs != g_iHint[client] )
+				{
+					g_iHint[client] = secs;
+					CPrintToChat(client, "%T", "Door_Wait", client, secs);
+				}
 			}
 		}
 		// Door set to auto open after X seconds when someone tries to open?
@@ -694,13 +712,20 @@ public Action OnUseEntity(int entity, int client, int caller, UseType type, floa
 				float time = g_fTimeFall - gametime;
 				if( time < 0.0 ) time = 0.0;
 
-				CPrintToChat(client, "%T", "Door_Wait", client, RoundToCeil(time));
+				int secs = RoundToCeil(time);
+				if( secs != g_iHint[client] )
+				{
+					g_iHint[client] = secs;
+					CPrintToChat(client, "%T", "Door_Wait", client, secs);
+				}
 			}
 		}
 
 		// else if( !g_bTimer )
 		if( !g_bTimer )
 		{
+			AcceptEntityInput(entity, "Unlock");
+
 			g_bBlock = false;
 			SDKUnhook(entity, SDKHook_Use, OnUseEntity);
 		}
@@ -1017,7 +1042,7 @@ void MoveSideway(const float vPos[3], const float vAng[3], float vReturn[3], flo
 // ====================================================================================================
 public void ReadyToFallLockedDoor()
 {
-	if( g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch ) return;
+	if( (g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch) || (g_bRestarted ? g_fCvarLock2 : g_fCvarLock) ) return;
 	if( g_iLockedDoor == -1 || EntRefToEntIndex(g_iLockedDoor) == INVALID_ENT_REFERENCE ) return;
 
 	delete g_hTimerFall;
