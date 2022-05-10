@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.20"
+#define PLUGIN_VERSION		"1.21"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,18 @@
 
 ========================================================================================
 	Change Log:
+
+1.21 (10-May-2022)
+	- Now requires "Left4DHooks" plugin version 1.101 or newer to accurately get the first and last saferoom doors.
+
+	- Added Spanish translations. Thanks to "Toranks" for providing.
+	- Changed cvar "l4d_safe_spam_fall_time" to make the saferoom door fall after "l4d_safe_spam_fall_touch*" and "l4d_safe_spam_lock*" cvars unlock the door.
+	- Renamed cvars "l4d_safe_spam_fall_touch" and "l4d_safe_spam_fall_touch_2" to "l4d_safe_spam_touch" and "l4d_safe_spam_touch_2" as they only control unlocking after touching.
+	- Fixed the plugin not locking the first saferoom door when the "l4d_safe_spam_open" cvar was set to "0".
+	- Fixed not always preventing doors from being locked on certain levels.
+	- Fixed some conflicts when the last saferoom door was locked by other plugins. Thanks to "Voevoda" for reporting.
+
+	- Thanks to "Voevoda" and "Toranks" for testing.
 
 1.20 (09-May-2022)
 	- Fixed the saferoom door not unlocking when the "l4d_safe_spam_fall_touch" cvars are 0.0.
@@ -136,9 +148,9 @@
 #include <sourcemod>
 #include <sdkhooks>
 #include <sdktools>
+#include <left4dhooks>
 
 #define CVAR_FLAGS				FCVAR_NOTIFY
-#define	MAX_DOORS				4 // Max last doors
 
 #define SOUND_BREAK1			"physics/metal/metal_box_break1.wav"
 #define SOUND_BREAK2			"physics/metal/metal_box_break2.wav"
@@ -161,11 +173,11 @@
 #define MODEL_STANDM			"models/lighthouse/checkpoint_door_lighthouse01_metal.mdl"
 
 
-ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarHint, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarFallTouch, g_hCvarFallTouch2;
+ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarHint, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarTouch, g_hCvarTouch2;
 bool g_bCvarAllow, g_bMapStarted, g_bMapBlocked, g_bLeft4Dead2, g_bGameStart, g_bRestarted, g_bOpened, g_bTimer, g_bBlock;
-int g_iRoundStart, g_iPlayerSpawn, g_iSafeDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastDoor[MAX_DOORS], g_iLastFlags[MAX_DOORS], g_iCvarHint, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor, g_iHint[MAXPLAYERS+1];
-float g_fLastDoor, g_fTimeLock, g_fTimeFall, g_fUseTime, g_fCvarPhysics, g_fCvarTimeClose, g_fCvarLock, g_fCvarLock2, g_fCvarTimeOpen, g_fCvarFallTime, g_fCvarFallTouch, g_fCvarFallTouch2;
-Handle g_hTimerFall, g_hLastTimer[MAX_DOORS];
+int g_iRoundStart, g_iPlayerSpawn, g_iLastDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastFlags, g_iCvarHint, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor, g_iHint[MAXPLAYERS+1];
+float g_fLastDoor, g_fTimeLock, g_fTimeFall, g_fUseTime, g_fCvarPhysics, g_fCvarTimeClose, g_fCvarLock, g_fCvarLock2, g_fCvarTimeOpen, g_fCvarFallTime, g_fCvarTouch, g_fCvarTouch2;
+Handle g_hTimerFall, g_hLastTimer;
 
 bool g_bSaferoomLocked; // Prevent forcing doors shut when another plugin is doing so. This prevents a recursive loop between the plugins causing a memory leak - This was prevalent in the old version using RequestFrame.
 bool g_bSoundHooked, g_bSoundWatch, g_bSoundHookDone; // Replace sounds when changing door skin
@@ -202,9 +214,33 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 		strcopy(error, err_max, "Plugin only supports Left 4 Dead 1 & 2.");
 		return APLRes_SilentFailure;
 	}
+
 	return APLRes_Success;
 }
 
+public void OnAllPluginsLoaded()
+{
+	ConVar version = FindConVar("left4dhooks_version");
+	if( version != null )
+	{
+		char sVer[16];
+		version.GetString(sVer, sizeof(sVer));
+
+		float ver = StringToFloat(sVer);
+		if( ver >= 1.101 )
+		{
+			return;
+		}
+	}
+
+	SetFailState("This plugin requires Left4DHooks version 1.01 or newer. Please update.");
+}
+
+
+
+// ==================================================
+// 					PLUGIN START
+// ==================================================
 public void OnPluginStart()
 {
 	char sPath[PLATFORM_MAX_PATH];
@@ -217,13 +253,13 @@ public void OnPluginStart()
 	g_hCvarModes =		CreateConVar(	"l4d_safe_spam_modes",			"",				"Turn on the plugin in these game modes, separate by commas (no spaces). (Empty = all).", CVAR_FLAGS);
 	g_hCvarModesOff =	CreateConVar(	"l4d_safe_spam_modes_off",		"",				"Turn off the plugin in these game modes, separate by commas (no spaces). (Empty = none).", CVAR_FLAGS);
 	g_hCvarModesTog =	CreateConVar(	"l4d_safe_spam_modes_tog",		"0",			"Turn on the plugin in these game modes. 0=All, 1=Coop, 2=Survival, 4=Versus, 8=Scavenge. Add numbers together.", CVAR_FLAGS);
-	g_hCvarFallTime =	CreateConVar(	"l4d_safe_spam_fall_time",		"20.0",			"0.0=Off. How many seconds after round start until the locked saferoom door will automatically fall.", CVAR_FLAGS);
-	g_hCvarFallTouch =	CreateConVar(	"l4d_safe_spam_fall_touch",		"0.0",			"0.0=Off. How many seconds after attempting to open the locked saferoom door until it will fall (overrides the _time cvar).", CVAR_FLAGS);
-	g_hCvarFallTouch2 =	CreateConVar(	"l4d_safe_spam_fall_touch_2",	"0.0",			"0.0=Off. How many seconds after attempting to open the locked saferoom door until it will fall (overrides the _time cvar). For the second+ round of a map.", CVAR_FLAGS);
+	g_hCvarFallTime =	CreateConVar(	"l4d_safe_spam_fall_time",		"10.0",			"0.0=Off. How many seconds after round start (or after unlocking by l4d_safe_spam_lock* and l4d_safe_spam_lock* cvars) until the locked saferoom door will automatically fall. Unless manually opened.", CVAR_FLAGS);
 	g_hCvarHint =		CreateConVar(	"l4d_safe_spam_hint",			"3",			"0=Off. 1=Display a message showing who opened or closed the saferoom door. 2=Display a message when saferoom door is auto unlocked (_touch and _lock cvars). 3=Both.", CVAR_FLAGS);
 	g_hCvarLast =		CreateConVar(	"l4d_safe_spam_last",			"0",			"Final door state on round start: 0=Use map default. 1=Close last door. 2=Open last door.", CVAR_FLAGS);
 	g_hCvarLock =		CreateConVar(	"l4d_safe_spam_lock",			"30.0",			"0.0=Off. How many seconds after round start will the saferoom door remain locked.", CVAR_FLAGS);
 	g_hCvarLock2 =		CreateConVar(	"l4d_safe_spam_lock_2",			"10.0",			"0.0=Off. How many seconds after round start will the saferoom door remain locked. For the second+ round of a map.", CVAR_FLAGS);
+	g_hCvarTouch =		CreateConVar(	"l4d_safe_spam_touch",			"0.0",			"0.0=Off. How many seconds after attempting to open the locked saferoom door until it will unlock (overrides the _time cvar).", CVAR_FLAGS);
+	g_hCvarTouch2 =		CreateConVar(	"l4d_safe_spam_touch_2",		"0.0",			"0.0=Off. How many seconds after attempting to open the locked saferoom door until it will unlock (overrides the _time cvar). For the second+ round of a map.", CVAR_FLAGS);
 	g_hCvarOpen =		CreateConVar(	"l4d_safe_spam_open",			"2",			"0=Off, 1=Keep the first saferoom door open once opened, 2=Make the first saferoom door fall once opened.", CVAR_FLAGS);
 	g_hCvarPhysics =	CreateConVar(	"l4d_safe_spam_physics",		"3.0",			"0.0=Always has physics. How many seconds until the fallen doors physics are disabled.", CVAR_FLAGS);
 	if( g_bLeft4Dead2 )
@@ -242,8 +278,8 @@ public void OnPluginStart()
 	g_hCvarModesOff.AddChangeHook(ConVarChanged_Allow);
 	g_hCvarModesTog.AddChangeHook(ConVarChanged_Allow);
 	g_hCvarFallTime.AddChangeHook(ConVarChanged_Cvars);
-	g_hCvarFallTouch.AddChangeHook(ConVarChanged_Cvars);
-	g_hCvarFallTouch2.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarTouch.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarTouch2.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarHint.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarLast.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarPhysics.AddChangeHook(ConVarChanged_Cvars);
@@ -340,23 +376,20 @@ void GetCvars()
 	g_fCvarTimeOpen = g_hCvarTimeOpen.FloatValue;
 	g_iCvarType = g_hCvarType.IntValue;
 	g_fCvarFallTime = g_hCvarFallTime.FloatValue;
-	g_fCvarFallTouch = g_hCvarFallTouch.FloatValue;
-	g_fCvarFallTouch2 = g_hCvarFallTouch2.FloatValue;
+	g_fCvarTouch = g_hCvarTouch.FloatValue;
+	g_fCvarTouch2 = g_hCvarTouch2.FloatValue;
 
 	if( last != g_iCvarOpen )
 	{
-		if( g_iSafeDoor && EntRefToEntIndex(g_iSafeDoor) != INVALID_ENT_REFERENCE )
+		if( g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
 		{
-			UnhookSingleEntityOutput(g_iSafeDoor, "OnOpen", OnFirst);
+			UnhookSingleEntityOutput(g_iLockedDoor, "OnOpen", OnFirst);
 		}
 
-		for( int i = 0; i < MAX_DOORS; i++ )
+		if( g_iLastDoor && EntRefToEntIndex(g_iLastDoor) != INVALID_ENT_REFERENCE )
 		{
-			if( g_iLastDoor[i] && EntRefToEntIndex(g_iLastDoor[i]) != INVALID_ENT_REFERENCE )
-			{
-				UnhookSingleEntityOutput(g_iLastDoor[i], "OnOpen", OnOpen);
-				UnhookSingleEntityOutput(g_iLastDoor[i], "OnClose", OnClose);
-			}
+			UnhookSingleEntityOutput(g_iLastDoor, "OnOpen", OnOpen);
+			UnhookSingleEntityOutput(g_iLastDoor, "OnClose", OnClose);
 		}
 	}
 }
@@ -381,18 +414,15 @@ void IsAllowed()
 
 		delete g_hTimerFall;
 
-		if( g_iSafeDoor && EntRefToEntIndex(g_iSafeDoor) != INVALID_ENT_REFERENCE )
+		if( g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
 		{
-			UnhookSingleEntityOutput(g_iSafeDoor, "OnOpen", OnFirst);
+			UnhookSingleEntityOutput(g_iLockedDoor, "OnOpen", OnFirst);
 		}
 
-		for( int i = 0; i < MAX_DOORS; i++ )
+		if( g_iLastDoor && EntRefToEntIndex(g_iLastDoor) != INVALID_ENT_REFERENCE )
 		{
-			if( g_iLastDoor[i] && EntRefToEntIndex(g_iLastDoor[i]) != INVALID_ENT_REFERENCE )
-			{
-				UnhookSingleEntityOutput(g_iLastDoor[i], "OnOpen", OnOpen);
-				UnhookSingleEntityOutput(g_iLastDoor[i], "OnClose", OnClose);
-			}
+			UnhookSingleEntityOutput(g_iLastDoor, "OnOpen", OnOpen);
+			UnhookSingleEntityOutput(g_iLastDoor, "OnClose", OnClose);
 		}
 	}
 }
@@ -539,14 +569,14 @@ public Action OnSoundHook(int clients[64], int &numClients, char sample[PLATFORM
 		// Should use "g_iDoorType[entity] == TYPE_STAND" instead of "g_iCvarSkin" to determine, but since the DoorType var doesn't exactly track the correct type this is safer, only breaks the sound if changing skin cvar after changing the model during gameplay.
 
 		// if( g_iCvarSkin == 2 && strcmp(sample, SOUND_DOOR_DEU) == 0 )
-		if( g_iCvarSkin == 2 && sample[0] == 'd' && sample[5] == '/' && sample[6] == 'C' && sample[16] == 'B'  )
+		if( g_iCvarSkin == 2 && sample[0] == 'd' && sample[5] == '/' && sample[6] == 'C' && sample[16] == 'B' )
 		{
 			// PrintToChatAll("Changed1 %d [%s]", g_iCvarSkin, sample);
 			sample = GetRandomInt(0, 1) == 0 ? SOUND_DOOR_LSU : SOUND_DOOR_LSU2;
 			return Plugin_Changed;
 		}
 		// else if( g_iCvarSkin == 1 && strncmp(sample, SOUND_DOOR_LSU, 27) == 0 )
-		else if( g_iCvarSkin == 1 && sample[0] == 'd' && sample[5] == '/' && sample[6] == 'C' && sample[16] == 'P'  )
+		else if( g_iCvarSkin == 1 && sample[0] == 'd' && sample[5] == '/' && sample[6] == 'C' && sample[16] == 'P' )
 		{
 			// PrintToChatAll("Changed2 %d [%s]", g_iCvarSkin, sample);
 			sample = SOUND_DOOR_DEU;
@@ -588,9 +618,7 @@ void ResetPlugin()
 	}
 
 	delete g_hTimerFall;
-
-	for( int i = 0; i < MAX_DOORS; i++ )
-		delete g_hLastTimer[i];
+	delete g_hLastTimer;
 
 	if( g_bSoundHooked )
 	{
@@ -605,7 +633,7 @@ public void Event_PlayerUse(Event event, const char[] name, bool dontBroadcast)
 	int entity = event.GetInt("targetid");
 	if( EntIndexToEntRef(entity) == g_iLockedDoor && GetEntProp(entity, Prop_Send, "m_bLocked") == 1 )
 	{
-		if( g_bBlock && (GetGameTime() < g_fTimeLock || g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch) )
+		if( g_bBlock && (GetGameTime() < g_fTimeLock || g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch) )
 		{
 			int client = GetClientOfUserId(event.GetInt("userid"));
 			OnUseEntity(entity, client, 0, Use_On, 0.0);
@@ -650,16 +678,23 @@ public Action OnUseEntity(int entity, int client, int caller, UseType type, floa
 			AcceptEntityInput(entity, "Close");
 			AcceptEntityInput(entity, "Lock");
 
-			SetEntProp(entity, Prop_Send, "m_spawnflags", 36864); // Prevent +USE + Door silent
+			SetEntProp(entity, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
+			SetEntProp(entity, Prop_Send, "m_spawnflags", DOOR_FLAG_SILENT|DOOR_FLAG_IGNORE_USE); // Prevent +USE + Door silent
 
 			// Auto open after touch timer
-			if( g_hTimerFall == null )
+			if( g_hTimerFall == null && g_fCvarFallTime )
 			{
-				float delay = g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch;
-				if( delay )
+				float delay = g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch;
+				if( delay == 0.0 )
 				{
-					g_fTimeFall = g_fTimeLock + delay;
-					g_hTimerFall = CreateTimer(delay + (g_fTimeLock - gametime), HandleAutoFallTimer, false, TIMER_FLAG_NO_MAPCHANGE);
+					g_fTimeFall = g_fTimeLock;
+
+					if( g_fCvarFallTime )
+					{
+						g_hTimerFall = CreateTimer(g_fCvarFallTime + (g_fTimeLock - gametime), HandleAutoFallTimer, false, TIMER_FLAG_NO_MAPCHANGE);
+					}
+					// else
+					CreateTimer(g_fTimeLock - gametime, HandleAutoUnlock, false, TIMER_FLAG_NO_MAPCHANGE);
 				}
 			}
 
@@ -668,7 +703,7 @@ public Action OnUseEntity(int entity, int client, int caller, UseType type, floa
 			{
 				g_fUseTime = gametime;
 
-				float delay = g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch;
+				float delay = g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch;
 				int secs = RoundToCeil(g_fTimeLock - gametime + delay);
 				if( secs != g_iHint[client] )
 				{
@@ -678,7 +713,7 @@ public Action OnUseEntity(int entity, int client, int caller, UseType type, floa
 			}
 		}
 		// Door set to auto open after X seconds when someone tries to open?
-		else if( g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch )
+		else if( g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch )
 		{
 			g_bBlock = true;
 
@@ -694,14 +729,20 @@ public Action OnUseEntity(int entity, int client, int caller, UseType type, floa
 			AcceptEntityInput(entity, "Close");
 			AcceptEntityInput(entity, "Lock");
 
-			SetEntProp(entity, Prop_Send, "m_spawnflags", 36864); // Prevent +USE + Door silent
+			SetEntProp(entity, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
+			SetEntProp(entity, Prop_Send, "m_spawnflags", DOOR_FLAG_SILENT|DOOR_FLAG_IGNORE_USE); // Prevent +USE + Door silent
 
 			// Auto open after touch timer
 			if( g_hTimerFall == null )
 			{
-				float delay = g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch;
+				float delay = g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch;
 				g_fTimeFall = gametime + delay;
-				g_hTimerFall = CreateTimer(delay, HandleAutoFallTimer, false, TIMER_FLAG_NO_MAPCHANGE);
+				if( g_fCvarFallTime )
+				{
+					g_hTimerFall = CreateTimer(delay + g_fCvarFallTime, HandleAutoFallTimer, false, TIMER_FLAG_NO_MAPCHANGE);
+				}
+				// else
+				CreateTimer(delay, HandleAutoUnlock, false, TIMER_FLAG_NO_MAPCHANGE);
 			}
 
 			// Delay until open
@@ -721,19 +762,33 @@ public Action OnUseEntity(int entity, int client, int caller, UseType type, floa
 			}
 		}
 
-		// else if( !g_bTimer )
 		if( !g_bTimer )
 		{
-			AcceptEntityInput(entity, "Unlock");
-
 			g_bBlock = false;
+
+			AcceptEntityInput(entity, "Close");
+			AcceptEntityInput(entity, "Lock");
+
+			SetEntProp(entity, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
+			SetEntProp(entity, Prop_Send, "m_spawnflags", DOOR_FLAG_SILENT|DOOR_FLAG_IGNORE_USE); // Prevent +USE + Door silent
+
 			SDKUnhook(entity, SDKHook_Use, OnUseEntity);
+			RequestFrame(OnFrameUnblock);
 		}
 
 		return Plugin_Handled;
 	}
 
 	return Plugin_Continue;
+}
+
+public void OnFrameUnblock()
+{
+	if( g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
+	{
+		SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSED);
+		SetEntProp(g_iLockedDoor, Prop_Send, "m_spawnflags", g_iFirstFlags);
+	}
 }
 
 public Action TimerRemoveSoundHook(Handle timer)
@@ -815,209 +870,194 @@ void DoorPrint(Event event, bool open)
 // ====================================================================================================
 void InitPlugin()
 {
+	int entity;
 	g_bGameStart = true;
 	g_bOpened = false;
 	g_bTimer = false;
 	g_fLastDoor = 0.0;
-	g_iSafeDoor = 0;
-	g_iLockedDoor = -1;
 	g_fTimeLock = GetGameTime() + (g_bRestarted ? g_fCvarLock2 : g_fCvarLock);
 
-	for( int i = 0; i < MAX_DOORS; i++ )
-	{
-		g_iLastDoor[i] = 0;
-	}
+	// Using Left4DHooks to find starting and ending saferoom doors
+	g_iLockedDoor = L4D_GetCheckpointFirst();
+	g_iLastDoor = L4D_GetCheckpointLast();
 
-	bool start;
-	float vStart[3], vPos[3];
+	if( g_iLockedDoor == -1 ) g_iLockedDoor = 0;
+	if( g_iLastDoor == -1 ) g_iLastDoor = 0;
 
-	// Find starting area to find nearest "prop_door_rotating_checkpoint"
-	for( int i = 1; i <= MaxClients; i++ )
+// PrintToServer("SAFE_SPAM A %d",g_iLockedDoor);
+// PrintToServer("SAFE_SPAM B %d",g_iLastDoor);
+
+	// First saferoom door
+	if( g_iLockedDoor && GetEntProp(g_iLockedDoor, Prop_Send, "m_bLocked") == 1 )
 	{
-		if( IsClientInGame(i) && GetClientTeam(i) == 2 )
+		entity = g_iLockedDoor;
+		g_iLockedDoor = EntIndexToEntRef(g_iLockedDoor);
+
+		// Rotate to correct angle if required
+		g_iDoorType[entity] = TYPE_DEFAULT;
+
+		if( g_bLeft4Dead2 )
 		{
-			start = true;
-			GetClientAbsOrigin(i, vStart);
-		}
-	}
-
-	int entity = -1;
-
-	while( (entity = FindEntityByClassname(entity, "prop_door_rotating_checkpoint")) != -1 )
-	{
-		if( GetEntProp(entity, Prop_Send, "m_bLocked") == 1 ) // Locked door
-		{
-			// Hooks etc
-			if( g_iLockedDoor == -1 )
+			if( g_iCvarSkin )
 			{
-				if( start )
-					GetEntPropVector(entity, Prop_Send, "m_vecOrigin", vPos);
+				static char modelname[64];
+				GetEntPropString(g_iLockedDoor, Prop_Data, "m_ModelName", modelname, sizeof(modelname));
 
-				if( !start || GetVectorDistance(vStart, vPos) < 750 )
+				if( strcmp(modelname, MODEL_OTHER01) == 0 )
 				{
-					// Rotate to correct angle if required
-					g_iDoorType[entity] = TYPE_DEFAULT;
+					g_iDoorType[entity] = TYPE_OTHER01;
 
-					if( g_bLeft4Dead2 )
-					{
-						if( g_iCvarSkin )
-						{
-							static char modelname[64];
-							GetEntPropString(entity, Prop_Data, "m_ModelName", modelname, sizeof(modelname));
+					float vAng[3], vPos[3];
+					GetEntPropVector(g_iLockedDoor, Prop_Data, "m_angRotation", vAng);
+					GetEntPropVector(g_iLockedDoor, Prop_Data, "m_vecOrigin", vPos);
 
-							if( strcmp(modelname, MODEL_OTHER01) == 0 )
-							{
-								g_iDoorType[entity] = TYPE_OTHER01;
+					MoveSideway(vPos, vAng, vPos, 53.6);
+					vAng[1] += 180.0;
+					TeleportEntity(g_iLockedDoor, vPos, vAng, NULL_VECTOR);
+				}
+				else
+				{
+					g_iDoorType[entity] = TYPE_STAND;
+				}
+			}
 
-								float vAng[3];
-								GetEntPropVector(entity, Prop_Data, "m_angRotation", vAng);
-								GetEntPropVector(entity, Prop_Data, "m_vecOrigin", vPos);
+			// Skin and sound
+			switch( g_iCvarSkin )
+			{
+				case 1:
+				{
+					SetEntityModel(g_iLockedDoor, MODEL_DEFAULT1);
+					SetEntPropString(g_iLockedDoor, Prop_Data, "m_SoundClose", "Doors.Checkpoint.FullClose1");
+					SetEntPropString(g_iLockedDoor, Prop_Data, "m_SoundOpen", "Doors.Checkpoint.FullOpen1");
+				}
+				case 2:
+				{
+					SetEntityModel(g_iLockedDoor, MODEL_STAND1);
+					SetEntPropString(g_iLockedDoor, Prop_Data, "m_SoundClose", "Doors.Glass.FullOpen1");
+					SetEntPropString(g_iLockedDoor, Prop_Data, "m_SoundOpen", "Doors.Wood.FullOpen1");
+					// SetEntPropString(g_iLockedDoor, Prop_Data, "m_SoundUnlock", "Doors.Wood.FullOpen1"); // Doesn't seem to work, requires sound hook override
+					// SetEntPropString(g_iLockedDoor, Prop_Data, "m_ls.sUnlockedSound", "Doors.Wood.FullOpen1"); // Doesn't seem to work, requires sound hook override
+				}
+			}
 
-								MoveSideway(vPos, vAng, vPos, 53.6);
-								vAng[1] += 180.0;
-								TeleportEntity(entity, vPos, vAng, NULL_VECTOR);
-							}
-							else
-							{
-								g_iDoorType[entity] = TYPE_STAND;
-							}
-						}
-
-						// Skin and sound
-						switch( g_iCvarSkin )
-						{
-							case 1:
-							{
-								SetEntityModel(entity, MODEL_DEFAULT1);
-								SetEntPropString(entity, Prop_Data, "m_SoundClose", "Doors.Checkpoint.FullClose1");
-								SetEntPropString(entity, Prop_Data, "m_SoundOpen", "Doors.Checkpoint.FullOpen1");
-							}
-							case 2:
-							{
-								SetEntityModel(entity, MODEL_STAND1);
-								SetEntPropString(entity, Prop_Data, "m_SoundClose", "Doors.Glass.FullOpen1");
-								SetEntPropString(entity, Prop_Data, "m_SoundOpen", "Doors.Wood.FullOpen1");
-								// SetEntPropString(entity, Prop_Data, "m_SoundUnlock", "Doors.Wood.FullOpen1"); // Doesn't seem to work, requires sound hook override
-								// SetEntPropString(entity, Prop_Data, "m_ls.sUnlockedSound", "Doors.Wood.FullOpen1"); // Doesn't seem to work, requires sound hook override
-							}
-						}
-
-						// Attach metal bars
-						if( g_iCvarSkin == 2 )
-						{
-							int metal = CreateEntityByName("prop_dynamic");
-							if( metal != -1 )
-							{
-								DispatchKeyValue(metal, "model", MODEL_STANDM);
-								SetVariantString("!activator");
-								AcceptEntityInput(metal, "SetParent", entity);
-								TeleportEntity(metal, view_as<float>({ -1.0, 0.0, 0.0}), view_as<float>({ 0.0, 0.0, 0.0}), NULL_VECTOR);
-								DispatchSpawn(metal);
-							}
-						}
-					}
-
-					g_iLockedDoor = EntIndexToEntRef(entity);
-
-					if( g_iCvarOpen && g_iSafeDoor == 0 && !g_bMapBlocked )
-					{
-						g_iSafeDoor = EntIndexToEntRef(entity);
-
-						if( g_iCvarOpen == 1 )
-						{
-							SetVariantString("OnOpen !self:Lock::0.0:-1");
-							AcceptEntityInput(entity, "AddOutput");
-						} else {
-							HookSingleEntityOutput(entity, "OnOpen", OnFirst);
-						}
-					}
-
-					if( (g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch) || (g_bRestarted ? g_fCvarLock2 : g_fCvarLock) )
-					{
-						SDKHook(g_iSafeDoor, SDKHook_Use, OnUseEntity);
-					}
+			// Attach metal bars
+			if( g_iCvarSkin == 2 )
+			{
+				int metal = CreateEntityByName("prop_dynamic");
+				if( metal != -1 )
+				{
+					DispatchKeyValue(metal, "model", MODEL_STANDM);
+					SetVariantString("!activator");
+					AcceptEntityInput(metal, "SetParent", g_iLockedDoor);
+					TeleportEntity(metal, view_as<float>({ -1.0, 0.0, 0.0}), view_as<float>({ 0.0, 0.0, 0.0}), NULL_VECTOR);
+					DispatchSpawn(metal);
 				}
 			}
 		}
-		else
+
+		// Hooks for opening and closing, preventing open on round start
+		if( g_iCvarOpen && !g_bMapBlocked )
 		{
-			// Rotate to correct angle if required
-			g_iDoorType[entity] = TYPE_DEFAULT;
-
-			if( g_bLeft4Dead2 )
+			if( g_iCvarOpen == 1 )
 			{
-				if( g_iCvarSkin )
+				SetVariantString("OnOpen !self:Lock::0.0:-1");
+				AcceptEntityInput(g_iLockedDoor, "AddOutput");
+			} else {
+				HookSingleEntityOutput(g_iLockedDoor, "OnOpen", OnFirst);
+			}
+		}
+
+		if( (g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch) || (g_bRestarted ? g_fCvarLock2 : g_fCvarLock) )
+		{
+			SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
+			SDKHook(g_iLockedDoor, SDKHook_Use, OnUseEntity);
+
+			if( g_fCvarFallTime && (g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch) == 0.0 )
+			{
+				float delay = (g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch) + (g_bRestarted ? g_fCvarLock2 : g_fCvarLock);
+				g_fTimeFall = GetGameTime() + delay + g_fCvarFallTime;
+				g_hTimerFall = CreateTimer(delay + g_fCvarFallTime, HandleAutoFallTimer, true, TIMER_FLAG_NO_MAPCHANGE);
+			}
+		}
+	} else {
+		g_iLockedDoor = 0;
+	}
+
+
+
+	// Last saferoom door
+	if( g_iLastDoor )
+	{
+		entity = g_iLastDoor;
+		g_iLastDoor = EntIndexToEntRef(g_iLastDoor);
+
+		// Rotate to correct angle if required
+		g_iDoorType[entity] = TYPE_DEFAULT;
+
+		if( g_bLeft4Dead2 )
+		{
+			if( g_iCvarSkin )
+			{
+				static char modelname[64];
+				GetEntPropString(g_iLastDoor, Prop_Data, "m_ModelName", modelname, sizeof(modelname));
+
+				if( strcmp(modelname, MODEL_OTHER01) == 0 )
 				{
-					static char modelname[64];
-					GetEntPropString(entity, Prop_Data, "m_ModelName", modelname, sizeof(modelname));
+					g_iDoorType[entity] = TYPE_OTHER01;
 
-					if( strcmp(modelname, MODEL_OTHER01) == 0 )
-					{
-						g_iDoorType[entity] = TYPE_OTHER01;
+					float vAng[3], vPos[3];
+					GetEntPropVector(g_iLastDoor, Prop_Data, "m_angRotation", vAng);
+					GetEntPropVector(g_iLastDoor, Prop_Data, "m_vecOrigin", vPos);
 
-						float vAng[3];
-						GetEntPropVector(entity, Prop_Data, "m_angRotation", vAng);
-						GetEntPropVector(entity, Prop_Data, "m_vecOrigin", vPos);
-
-						MoveSideway(vPos, vAng, vPos, 53.6);
-						vAng[1] += 180.0;
-						TeleportEntity(entity, vPos, vAng, NULL_VECTOR);
-					}
+					MoveSideway(vPos, vAng, vPos, 53.6);
+					vAng[1] += 180.0;
+					TeleportEntity(g_iLastDoor, vPos, vAng, NULL_VECTOR);
 				}
+			}
 
-				// Skin and sound
-				switch( g_iCvarSkin )
+			// Skin and sound
+			switch( g_iCvarSkin )
+			{
+				case 1:
 				{
-					case 1:
-					{
-						SetEntityModel(entity, MODEL_DEFAULT2);
-						SetEntPropString(entity, Prop_Data, "m_SoundClose", "Doors.Checkpoint.FullClose1");
-						SetEntPropString(entity, Prop_Data, "m_SoundOpen", "Doors.Checkpoint.FullOpen1");
-					}
-					case 2:
-					{
-						SetEntityModel(entity, MODEL_STAND2);
-						SetEntPropString(entity, Prop_Data, "m_SoundClose", "Doors.Glass.FullOpen1");
-						SetEntPropString(entity, Prop_Data, "m_SoundOpen", "Doors.Wood.FullOpen1");
-						// SetEntPropString(entity, Prop_Data, "m_SoundUnlock", "Doors.Wood.FullOpen1"); // Doesn't seem to work, requires sound hook override
-						// SetEntPropString(entity, Prop_Data, "m_ls.sUnlockedSound", "Doors.Wood.FullOpen1"); // Doesn't seem to work, requires sound hook override
-					}
+					SetEntityModel(g_iLastDoor, MODEL_DEFAULT2);
+					SetEntPropString(g_iLastDoor, Prop_Data, "m_SoundClose", "Doors.Checkpoint.FullClose1");
+					SetEntPropString(g_iLastDoor, Prop_Data, "m_SoundOpen", "Doors.Checkpoint.FullOpen1");
 				}
-
-				if( g_iCvarSkin )
+				case 2:
 				{
-					for( int att = 0; att < 2048; att++ )
+					SetEntityModel(g_iLastDoor, MODEL_STAND2);
+					SetEntPropString(g_iLastDoor, Prop_Data, "m_SoundClose", "Doors.Glass.FullOpen1");
+					SetEntPropString(g_iLastDoor, Prop_Data, "m_SoundOpen", "Doors.Wood.FullOpen1");
+					// SetEntPropString(g_iLastDoor, Prop_Data, "m_SoundUnlock", "Doors.Wood.FullOpen1"); // Doesn't seem to work, requires sound hook override
+					// SetEntPropString(g_iLastDoor, Prop_Data, "m_ls.sUnlockedSound", "Doors.Wood.FullOpen1"); // Doesn't seem to work, requires sound hook override
+				}
+			}
+
+			if( g_iCvarSkin )
+			{
+				for( int att = 0; att < 2048; att++ )
+				{
+					if( IsValidEdict(att) )
 					{
-						if( IsValidEdict(att) )
+						if( HasEntProp(att, Prop_Send, "moveparent") && GetEntPropEnt(att, Prop_Send, "moveparent") == g_iLastDoor )
 						{
-							if( HasEntProp(att, Prop_Send, "moveparent") && GetEntPropEnt(att, Prop_Send, "moveparent") == entity )
-							{
-								SetVariantString("!activator");
-								AcceptEntityInput(att, "SetParent", entity);
-							}
+							SetVariantString("!activator");
+							AcceptEntityInput(att, "SetParent", g_iLastDoor);
 						}
 					}
 				}
 			}
+		}
 
-			//  Hooks etc
-			if( g_iCvarLast == 1 )			AcceptEntityInput(entity, "Close");
-			else if( g_iCvarLast == 2 )		AcceptEntityInput(entity, "Open");
+		// Hooks etc
+		if( g_iCvarLast == 1 )			AcceptEntityInput(g_iLastDoor, "Close");
+		else if( g_iCvarLast == 2 )		AcceptEntityInput(g_iLastDoor, "Open");
 
-			if( g_iCvarType )
-			{
-				for( int i = 0; i < MAX_DOORS; i++ )
-				{
-					if( g_iLastDoor[i] == 0 )
-					{
-						HookSingleEntityOutput(entity, "OnOpen", OnOpen);
-						HookSingleEntityOutput(entity, "OnClose", OnClose);
-
-						g_iLastDoor[i] = EntIndexToEntRef(entity);
-						break;
-					}
-				}
-			}
+		if( g_iCvarType )
+		{
+			HookSingleEntityOutput(g_iLastDoor, "OnOpen", OnOpen);
+			HookSingleEntityOutput(g_iLastDoor, "OnClose", OnClose);
 		}
 	}
 
@@ -1042,8 +1082,8 @@ void MoveSideway(const float vPos[3], const float vAng[3], float vReturn[3], flo
 // ====================================================================================================
 public void ReadyToFallLockedDoor()
 {
-	if( (g_bRestarted ? g_fCvarFallTouch2 : g_fCvarFallTouch) || (g_bRestarted ? g_fCvarLock2 : g_fCvarLock) ) return;
-	if( g_iLockedDoor == -1 || EntRefToEntIndex(g_iLockedDoor) == INVALID_ENT_REFERENCE ) return;
+	if( (g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch) || (g_bRestarted ? g_fCvarLock2 : g_fCvarLock) ) return;
+	if( !g_iLockedDoor || EntRefToEntIndex(g_iLockedDoor) == INVALID_ENT_REFERENCE ) return;
 
 	delete g_hTimerFall;
 	g_hTimerFall = CreateTimer(g_fCvarFallTime, HandleAutoFallTimer, true, TIMER_FLAG_NO_MAPCHANGE);
@@ -1051,11 +1091,12 @@ public void ReadyToFallLockedDoor()
 
 public Action HandleAutoFallTimer(Handle timer, bool main)
 {
-	if( g_iCvarOpen != 1 && g_iLockedDoor != -1 && !g_bOpened && !g_bMapBlocked && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
+	if( g_iCvarOpen != 1 && !g_bOpened && !g_bMapBlocked && g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
 	{
 		g_bTimer = false;
 		g_bBlock = false;
 
+		SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSED);
 		SDKUnhook(g_iLockedDoor, SDKHook_Use, OnUseEntity);
 
 		if( !main && g_iCvarHint & 2 )
@@ -1073,6 +1114,20 @@ public Action HandleAutoFallTimer(Handle timer, bool main)
 	}
 
 	g_hTimerFall = null;
+
+	return Plugin_Continue;
+}
+
+public Action HandleAutoUnlock(Handle timer)
+{
+	if( g_iCvarOpen != 1 && !g_bOpened && !g_bMapBlocked && g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
+	{
+		g_bTimer = false;
+		g_bBlock = false;
+
+		SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSED);
+		SDKUnhook(g_iLockedDoor, SDKHook_Use, OnUseEntity);
+	}
 
 	return Plugin_Continue;
 }
@@ -1095,10 +1150,14 @@ public void OnFirst(const char[] output, int entity, int activator, float delay)
 	// Prevent opening if holding +USE and supposed to be blocked
 	if( g_bBlock )
 	{
+		// AcceptEntityInput(entity, "Open");
 		AcceptEntityInput(entity, "Close");
 		AcceptEntityInput(entity, "Lock");
+		SetEntProp(entity, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
 		return;
 	}
+
+	g_bOpened = true;
 
 	char sModel[64];
 	GetEntPropString(entity, Prop_Data, "m_ModelName", sModel, sizeof(sModel));
@@ -1148,7 +1207,8 @@ public void OnFirst(const char[] output, int entity, int activator, float delay)
 	SetVariantString("unlock");
 	AcceptEntityInput(entity, "SetAnimation");
 
-	SetEntProp(entity, Prop_Send, "m_spawnflags", 36864); // Prevent +USE + Door silent
+	SetEntProp(entity, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
+	SetEntProp(entity, Prop_Send, "m_spawnflags", DOOR_FLAG_SILENT|DOOR_FLAG_IGNORE_USE); // Prevent +USE + Door silent
 
 	// Wait for handle to fall (does not work for wooden handle - Last Stand: TODO FIXME) - deleting crashes in L4D1 so keeping it alive.
 	// SetVariantString("OnUser4 !self:Kill::1.0:1");
@@ -1214,42 +1274,32 @@ void OnUseDoor(int entity, bool open)
 	if( g_bSaferoomLocked )
 		return;
 
-	// Get door index
-	int index = -1;
-
-	for( int i = 0; i < MAX_DOORS; i++ )
-	{
-		if( g_iLastDoor[i] && EntRefToEntIndex(g_iLastDoor[i]) == entity )
-		{
-			index = i;
-			break;
-		}
-	}
-
-	if( index == -1 )
+	if( !g_iLastDoor || EntRefToEntIndex(g_iLastDoor) != entity )
 		return;
 
 	// Timer already blocking
-	if( g_hLastTimer[index] != null )
+	if( g_hLastTimer != null )
 		return;
 
 	// Block open/close
 	if( (open && g_iCvarType & 1) || (!open && g_iCvarType & 2) )
 	{
-		g_iLastFlags[index] = GetEntProp(g_iLastDoor[index], Prop_Send, "m_spawnflags");
-		SetEntProp(g_iLastDoor[index], Prop_Send, "m_spawnflags", 36864); // Prevent +USE + Door silent
-		g_hLastTimer[index] = CreateTimer(open ? g_fCvarTimeOpen : g_fCvarTimeClose, TimeReset, index);
+		g_iLastFlags = GetEntProp(g_iLastDoor, Prop_Send, "m_spawnflags");
+		SetEntProp(g_iLastDoor, Prop_Send, "m_spawnflags", DOOR_FLAG_SILENT|DOOR_FLAG_IGNORE_USE); // Prevent +USE + Door silent
+		g_hLastTimer = CreateTimer(open ? g_fCvarTimeOpen : g_fCvarTimeClose, TimeReset);
 
 		g_fLastDoor = GetGameTime() + (open ? g_fCvarTimeOpen : g_fCvarTimeClose);
 	}
 }
 
-public Action TimeReset(Handle timer, int index)
+public Action TimeReset(Handle timer)
 {
-	if( g_iLastDoor[index] && EntRefToEntIndex(g_iLastDoor[index]) != INVALID_ENT_REFERENCE )
-		SetEntProp(g_iLastDoor[index], Prop_Send, "m_spawnflags", g_iLastFlags[index]);
+	if( g_iLastDoor && EntRefToEntIndex(g_iLastDoor) != INVALID_ENT_REFERENCE )
+	{
+		SetEntProp(g_iLastDoor, Prop_Send, "m_spawnflags", g_iLastFlags);
+	}
 
-	g_hLastTimer[index] = null;
+	g_hLastTimer = null;
 
 	return Plugin_Continue;
 }
@@ -1267,6 +1317,8 @@ public Action TimeResetFirst(Handle timer, int index)
 	}
 	return Plugin_Continue;
 }
+
+
 
 /* OLD METHOD: Kept for demonstration purposes.
 bool g_bWatch;

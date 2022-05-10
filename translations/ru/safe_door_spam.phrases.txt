@@ -10,10 +10,10 @@
 		"ru"		"{olive}[Убежище] {white}закрыто игроком {orange}%N"
 	}
 
-    "Door_Wait"
-    {
-        "ru"        "{olive}[Убежище] {white}Дверь откроется через {orange}%d {white}секунд"
-    }
+	"Door_Wait"
+	{
+		"ru"		"{olive}[Убежище] {white}Дверь откроется через {orange}%d {white}секунд"
+	}
 
 	"Door_Unlocked"
 	{
