@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.21"
+#define PLUGIN_VERSION		"1.22"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,10 @@
 
 ========================================================================================
 	Change Log:
+
+1.22 (20-May-2022)
+	- L4D2: Added cvar "l4d_safe_spam_glow" to make the first saferoom door glow when locked.
+	- Fixed not removing the auto unlock timer on round end.
 
 1.21 (10-May-2022)
 	- Now requires "Left4DHooks" plugin version 1.101 or newer to accurately get the first and last saferoom doors.
@@ -173,11 +177,11 @@
 #define MODEL_STANDM			"models/lighthouse/checkpoint_door_lighthouse01_metal.mdl"
 
 
-ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarHint, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarTouch, g_hCvarTouch2;
+ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarGlow, g_hCvarHint, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarTouch, g_hCvarTouch2;
 bool g_bCvarAllow, g_bMapStarted, g_bMapBlocked, g_bLeft4Dead2, g_bGameStart, g_bRestarted, g_bOpened, g_bTimer, g_bBlock;
-int g_iRoundStart, g_iPlayerSpawn, g_iLastDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastFlags, g_iCvarHint, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor, g_iHint[MAXPLAYERS+1];
+int g_iRoundStart, g_iPlayerSpawn, g_iLastDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastFlags, g_iCvarGlow, g_iCvarHint, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor, g_iHint[MAXPLAYERS+1];
 float g_fLastDoor, g_fTimeLock, g_fTimeFall, g_fUseTime, g_fCvarPhysics, g_fCvarTimeClose, g_fCvarLock, g_fCvarLock2, g_fCvarTimeOpen, g_fCvarFallTime, g_fCvarTouch, g_fCvarTouch2;
-Handle g_hTimerFall, g_hLastTimer;
+Handle g_hTimerFall, g_hLastTimer, g_hTimerUnlock;
 
 bool g_bSaferoomLocked; // Prevent forcing doors shut when another plugin is doing so. This prevents a recursive loop between the plugins causing a memory leak - This was prevalent in the old version using RequestFrame.
 bool g_bSoundHooked, g_bSoundWatch, g_bSoundHookDone; // Replace sounds when changing door skin
@@ -254,6 +258,8 @@ public void OnPluginStart()
 	g_hCvarModesOff =	CreateConVar(	"l4d_safe_spam_modes_off",		"",				"Turn off the plugin in these game modes, separate by commas (no spaces). (Empty = none).", CVAR_FLAGS);
 	g_hCvarModesTog =	CreateConVar(	"l4d_safe_spam_modes_tog",		"0",			"Turn on the plugin in these game modes. 0=All, 1=Coop, 2=Survival, 4=Versus, 8=Scavenge. Add numbers together.", CVAR_FLAGS);
 	g_hCvarFallTime =	CreateConVar(	"l4d_safe_spam_fall_time",		"10.0",			"0.0=Off. How many seconds after round start (or after unlocking by l4d_safe_spam_lock* and l4d_safe_spam_lock* cvars) until the locked saferoom door will automatically fall. Unless manually opened.", CVAR_FLAGS);
+	if( g_bLeft4Dead2 )
+		g_hCvarGlow =	CreateConVar(	"l4d_safe_spam_glow",			"255 0 0",		"0=Off. Three values between 0-255 separated by spaces. RGB Color255 - Red Green Blue.", CVAR_FLAGS);
 	g_hCvarHint =		CreateConVar(	"l4d_safe_spam_hint",			"3",			"0=Off. 1=Display a message showing who opened or closed the saferoom door. 2=Display a message when saferoom door is auto unlocked (_touch and _lock cvars). 3=Both.", CVAR_FLAGS);
 	g_hCvarLast =		CreateConVar(	"l4d_safe_spam_last",			"0",			"Final door state on round start: 0=Use map default. 1=Close last door. 2=Open last door.", CVAR_FLAGS);
 	g_hCvarLock =		CreateConVar(	"l4d_safe_spam_lock",			"30.0",			"0.0=Off. How many seconds after round start will the saferoom door remain locked.", CVAR_FLAGS);
@@ -280,6 +286,8 @@ public void OnPluginStart()
 	g_hCvarFallTime.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarTouch.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarTouch2.AddChangeHook(ConVarChanged_Cvars);
+	if( g_bLeft4Dead2 )
+		g_hCvarGlow.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarHint.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarLast.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarPhysics.AddChangeHook(ConVarChanged_Cvars);
@@ -364,6 +372,8 @@ void GetCvars()
 {
 	int last = g_iCvarOpen;
 
+	if( g_bLeft4Dead2 )
+		g_iCvarGlow = GetColor(g_hCvarGlow);
 	g_iCvarHint = g_hCvarHint.IntValue;
 	g_iCvarLast = g_hCvarLast.IntValue;
 	g_fCvarPhysics = g_hCvarPhysics.FloatValue;
@@ -392,6 +402,27 @@ void GetCvars()
 			UnhookSingleEntityOutput(g_iLastDoor, "OnClose", OnClose);
 		}
 	}
+}
+
+int GetColor(ConVar hCvar)
+{
+	char sTemp[12];
+	hCvar.GetString(sTemp, sizeof(sTemp));
+
+	if( sTemp[0] == 0 )
+		return 0;
+
+	char sColors[3][4];
+	int color = ExplodeString(sTemp, " ", sColors, sizeof(sColors), sizeof(sColors[]));
+
+	if( color != 3 )
+		return 0;
+
+	color = StringToInt(sColors[0]);
+	color += 256 * StringToInt(sColors[1]);
+	color += 65536 * StringToInt(sColors[2]);
+
+	return color;
 }
 
 void IsAllowed()
@@ -619,6 +650,7 @@ void ResetPlugin()
 
 	delete g_hTimerFall;
 	delete g_hLastTimer;
+	delete g_hTimerUnlock;
 
 	if( g_bSoundHooked )
 	{
@@ -689,12 +721,10 @@ public Action OnUseEntity(int entity, int client, int caller, UseType type, floa
 				{
 					g_fTimeFall = g_fTimeLock;
 
-					if( g_fCvarFallTime )
-					{
-						g_hTimerFall = CreateTimer(g_fCvarFallTime + (g_fTimeLock - gametime), HandleAutoFallTimer, false, TIMER_FLAG_NO_MAPCHANGE);
-					}
-					// else
-					CreateTimer(g_fTimeLock - gametime, HandleAutoUnlock, false, TIMER_FLAG_NO_MAPCHANGE);
+					g_hTimerFall = CreateTimer(g_fCvarFallTime + (g_fTimeLock - gametime), HandleAutoFallTimer, false, TIMER_FLAG_NO_MAPCHANGE);
+
+					delete g_hTimerUnlock;
+					g_hTimerUnlock = CreateTimer(g_fTimeLock - gametime, HandleAutoUnlock, false, TIMER_FLAG_NO_MAPCHANGE);
 				}
 			}
 
@@ -737,12 +767,14 @@ public Action OnUseEntity(int entity, int client, int caller, UseType type, floa
 			{
 				float delay = g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch;
 				g_fTimeFall = gametime + delay;
+
 				if( g_fCvarFallTime )
 				{
 					g_hTimerFall = CreateTimer(delay + g_fCvarFallTime, HandleAutoFallTimer, false, TIMER_FLAG_NO_MAPCHANGE);
 				}
-				// else
-				CreateTimer(delay, HandleAutoUnlock, false, TIMER_FLAG_NO_MAPCHANGE);
+
+				delete g_hTimerUnlock;
+				g_hTimerUnlock = CreateTimer(delay, HandleAutoUnlock, false, TIMER_FLAG_NO_MAPCHANGE);
 			}
 
 			// Delay until open
@@ -884,8 +916,8 @@ void InitPlugin()
 	if( g_iLockedDoor == -1 ) g_iLockedDoor = 0;
 	if( g_iLastDoor == -1 ) g_iLastDoor = 0;
 
-// PrintToServer("SAFE_SPAM A %d",g_iLockedDoor);
-// PrintToServer("SAFE_SPAM B %d",g_iLastDoor);
+// PrintToServer("SAFE_SPAM A %d", g_iLockedDoor);
+// PrintToServer("SAFE_SPAM B %d", g_iLastDoor);
 
 	// First saferoom door
 	if( g_iLockedDoor && GetEntProp(g_iLockedDoor, Prop_Send, "m_bLocked") == 1 )
@@ -969,6 +1001,13 @@ void InitPlugin()
 
 		if( (g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch) || (g_bRestarted ? g_fCvarLock2 : g_fCvarLock) )
 		{
+			if( g_iCvarGlow && g_bLeft4Dead2 )
+			{
+				SetEntProp(entity, Prop_Send, "m_iGlowType", 3);
+				SetEntProp(entity, Prop_Send, "m_glowColorOverride", g_iCvarGlow);
+				SetEntProp(entity, Prop_Send, "m_nGlowRange", 9999);
+			}
+
 			SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
 			SDKHook(g_iLockedDoor, SDKHook_Use, OnUseEntity);
 
@@ -1096,6 +1135,13 @@ public Action HandleAutoFallTimer(Handle timer, bool main)
 		g_bTimer = false;
 		g_bBlock = false;
 
+		// Remove Glow
+		if( g_bLeft4Dead2 )
+		{
+			SetEntProp(g_iLockedDoor, Prop_Send, "m_glowColorOverride", 0);
+			AcceptEntityInput(g_iLockedDoor, "StopGlowing");
+		}
+
 		SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSED);
 		SDKUnhook(g_iLockedDoor, SDKHook_Use, OnUseEntity);
 
@@ -1120,11 +1166,21 @@ public Action HandleAutoFallTimer(Handle timer, bool main)
 
 public Action HandleAutoUnlock(Handle timer)
 {
+	g_hTimerUnlock = null;
+
 	if( g_iCvarOpen != 1 && !g_bOpened && !g_bMapBlocked && g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
 	{
 		g_bTimer = false;
 		g_bBlock = false;
 
+		// Remove Glow
+		if( g_bLeft4Dead2 )
+		{
+			SetEntProp(g_iLockedDoor, Prop_Send, "m_glowColorOverride", 0);
+			AcceptEntityInput(g_iLockedDoor, "StopGlowing");
+		}
+
+		// Unlock
 		SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSED);
 		SDKUnhook(g_iLockedDoor, SDKHook_Use, OnUseEntity);
 	}
@@ -1166,6 +1222,14 @@ public void OnFirst(const char[] output, int entity, int activator, float delay)
 	GetEntPropVector(entity, Prop_Data, "m_vecAbsOrigin", vPos);
 	GetEntPropVector(entity, Prop_Send, "m_angRotation", vAng);
 	// GetEntPropVector(entity, Prop_Data, "m_angRotationOpenForward", vDir);
+
+	// Remove Glow
+	if( g_bLeft4Dead2 )
+	{
+		SetEntProp(entity, Prop_Send, "m_nGlowRange", 1);
+		SetEntProp(entity, Prop_Send, "m_glowColorOverride", 65025);
+		AcceptEntityInput(entity, "StopGlowing");
+	}
 
 	// Make old door non-solid, so physics door does not collide and stutter
 	// Collison group fixes "in solid list (not solid)"
