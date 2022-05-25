@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.22"
+#define PLUGIN_VERSION		"1.23"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,9 @@
 
 ========================================================================================
 	Change Log:
+
+1.23 (25-May-2022)
+	- Fixed not removing the glow when the door is auto unlocked and ready to be opened.
 
 1.22 (20-May-2022)
 	- L4D2: Added cvar "l4d_safe_spam_glow" to make the first saferoom door glow when locked.
@@ -1016,6 +1019,7 @@ void InitPlugin()
 				float delay = (g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch) + (g_bRestarted ? g_fCvarLock2 : g_fCvarLock);
 				g_fTimeFall = GetGameTime() + delay + g_fCvarFallTime;
 				g_hTimerFall = CreateTimer(delay + g_fCvarFallTime, HandleAutoFallTimer, true, TIMER_FLAG_NO_MAPCHANGE);
+				g_hTimerUnlock = CreateTimer(delay, HandleAutoUnlock, false, TIMER_FLAG_NO_MAPCHANGE);
 			}
 		}
 	} else {
@@ -1157,6 +1161,8 @@ public Action HandleAutoFallTimer(Handle timer, bool main)
 		}
 
 		OnFirst("", g_iLockedDoor, 0, 0.0);
+
+		delete g_hTimerUnlock;
 	}
 
 	g_hTimerFall = null;
