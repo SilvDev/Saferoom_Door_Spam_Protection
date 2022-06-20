@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.23"
+#define PLUGIN_VERSION		"1.24"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,9 @@
 
 ========================================================================================
 	Change Log:
+
+1.24 (20-Jun-2022)
+	- Changed the "modes" cvars gamemode detection method to use "Left4DHooks" forwards and natives instead of creating an entity.
 
 1.23 (25-May-2022)
 	- Fixed not removing the glow when the door is auto unlocked and ready to be opened.
@@ -181,7 +184,7 @@
 
 
 ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarGlow, g_hCvarHint, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarTouch, g_hCvarTouch2;
-bool g_bCvarAllow, g_bMapStarted, g_bMapBlocked, g_bLeft4Dead2, g_bGameStart, g_bRestarted, g_bOpened, g_bTimer, g_bBlock;
+bool g_bCvarAllow, g_bMapBlocked, g_bLeft4Dead2, g_bGameStart, g_bRestarted, g_bOpened, g_bTimer, g_bBlock;
 int g_iRoundStart, g_iPlayerSpawn, g_iLastDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastFlags, g_iCvarGlow, g_iCvarHint, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor, g_iHint[MAXPLAYERS+1];
 float g_fLastDoor, g_fTimeLock, g_fTimeFall, g_fUseTime, g_fCvarPhysics, g_fCvarTimeClose, g_fCvarLock, g_fCvarLock2, g_fCvarTimeOpen, g_fCvarFallTime, g_fCvarTouch, g_fCvarTouch2;
 Handle g_hTimerFall, g_hLastTimer, g_hTimerUnlock;
@@ -230,7 +233,7 @@ public void OnAllPluginsLoaded()
 	ConVar version = FindConVar("left4dhooks_version");
 	if( version != null )
 	{
-		char sVer[16];
+		char sVer[8];
 		version.GetString(sVer, sizeof(sVer));
 
 		float ver = StringToFloat(sVer);
@@ -240,7 +243,7 @@ public void OnAllPluginsLoaded()
 		}
 	}
 
-	SetFailState("This plugin requires Left4DHooks version 1.01 or newer. Please update.");
+	SetFailState("\n==========\nThis plugin requires \"Left 4 DHooks Direct\" version 1.01 or newer. Please update:\nhttps://forums.alliedmods.net/showthread.php?t=321696\n==========");
 }
 
 
@@ -307,7 +310,7 @@ public void OnPluginStart()
 	RegAdminCmd("sm_door_fall", CmdDoorLast, ADMFLAG_ROOT, "Test command to make the first locked saferoom door fall over.");
 }
 
-public Action CmdDoorDrop(int client, int args)
+Action CmdDoorDrop(int client, int args)
 {
 	int entity = GetClientAimTarget(client, false);
 	if( entity != -1 )
@@ -325,7 +328,7 @@ public Action CmdDoorDrop(int client, int args)
 	return Plugin_Handled;
 }
 
-public Action CmdDoorLast(int client, int args)
+Action CmdDoorLast(int client, int args)
 {
 	if( g_iLockedDoor == -1 || EntRefToEntIndex(g_iLockedDoor) == INVALID_ENT_REFERENCE )
 	{
@@ -361,12 +364,12 @@ public void OnConfigsExecuted()
 	IsAllowed();
 }
 
-public void ConVarChanged_Allow(Handle convar, const char[] oldValue, const char[] newValue)
+void ConVarChanged_Allow(Handle convar, const char[] oldValue, const char[] newValue)
 {
 	IsAllowed();
 }
 
-public void ConVarChanged_Cvars(Handle convar, const char[] oldValue, const char[] newValue)
+void ConVarChanged_Cvars(Handle convar, const char[] oldValue, const char[] newValue)
 {
 	GetCvars();
 }
@@ -462,39 +465,22 @@ void IsAllowed()
 }
 
 int g_iCurrentMode;
+public void L4D_OnGameModeChange(int gamemode)
+{
+	g_iCurrentMode = gamemode;
+}
+
 bool IsAllowedGameMode()
 {
 	if( g_hCvarMPGameMode == null )
 		return false;
 
+	if( g_iCurrentMode == 0 ) g_iCurrentMode = L4D_GetGameModeType();
+
 	int iCvarModesTog = g_hCvarModesTog.IntValue;
-	if( iCvarModesTog != 0 )
-	{
-		if( g_bMapStarted == false )
-			return false;
 
-		g_iCurrentMode = 0;
-
-		int entity = CreateEntityByName("info_gamemode");
-		if( IsValidEntity(entity) )
-		{
-			DispatchSpawn(entity);
-			HookSingleEntityOutput(entity, "OnCoop", OnGamemode, true);
-			HookSingleEntityOutput(entity, "OnSurvival", OnGamemode, true);
-			HookSingleEntityOutput(entity, "OnVersus", OnGamemode, true);
-			HookSingleEntityOutput(entity, "OnScavenge", OnGamemode, true);
-			ActivateEntity(entity);
-			AcceptEntityInput(entity, "PostSpawnActivate");
-			if( IsValidEntity(entity) ) // Because sometimes "PostSpawnActivate" seems to kill the ent.
-				RemoveEdict(entity); // Because multiple plugins creating at once, avoid too many duplicate ents in the same frame
-		}
-
-		if( g_iCurrentMode == 0 )
-			return false;
-
-		if( !(iCvarModesTog & g_iCurrentMode) )
-			return false;
-	}
+	if( iCvarModesTog && !(iCvarModesTog & g_iCurrentMode) )
+		return false;
 
 	char sGameModes[64], sGameMode[64];
 	g_hCvarMPGameMode.GetString(sGameMode, sizeof(sGameMode));
@@ -517,18 +503,6 @@ bool IsAllowedGameMode()
 	}
 
 	return true;
-}
-
-public void OnGamemode(const char[] output, int caller, int activator, float delay)
-{
-	if( strcmp(output, "OnCoop") == 0 )
-		g_iCurrentMode = 1;
-	else if( strcmp(output, "OnSurvival") == 0 )
-		g_iCurrentMode = 2;
-	else if( strcmp(output, "OnVersus") == 0 )
-		g_iCurrentMode = 4;
-	else if( strcmp(output, "OnScavenge") == 0 )
-		g_iCurrentMode = 8;
 }
 
 
@@ -582,8 +556,6 @@ public void OnMapStart()
 	PrecacheModel(MODEL_STAND2);
 	PrecacheModel(MODEL_STANDM);
 
-	g_bMapStarted = true;
-
 	if( g_bLeft4Dead2 )
 	{
 		char sMap[10];
@@ -596,7 +568,7 @@ public void OnMapStart()
 	}
 }
 
-public Action OnSoundHook(int clients[64], int &numClients, char sample[PLATFORM_MAX_PATH], int &entity, int &channel, float &volume, int &level, int &pitch, int &flags)
+Action OnSoundHook(int clients[64], int &numClients, char sample[PLATFORM_MAX_PATH], int &entity, int &channel, float &volume, int &level, int &pitch, int &flags)
 {
 	if( g_bSoundWatch )
 	{
@@ -624,11 +596,10 @@ public Action OnSoundHook(int clients[64], int &numClients, char sample[PLATFORM
 public void OnMapEnd()
 {
 	g_bRestarted = false;
-	g_bMapStarted = false;
 	ResetPlugin();
 }
 
-public void Event_RoundEnd(Event event, const char[] name, bool dontBroadcast)
+void Event_RoundEnd(Event event, const char[] name, bool dontBroadcast)
 {
 	g_bRestarted = true;
 	ResetPlugin();
@@ -663,7 +634,7 @@ void ResetPlugin()
 }
 
 // Replace unlocking door sound
-public void Event_PlayerUse(Event event, const char[] name, bool dontBroadcast)
+void Event_PlayerUse(Event event, const char[] name, bool dontBroadcast)
 {
 	int entity = event.GetInt("targetid");
 	if( EntIndexToEntRef(entity) == g_iLockedDoor && GetEntProp(entity, Prop_Send, "m_bLocked") == 1 )
@@ -690,7 +661,7 @@ public void Event_PlayerUse(Event event, const char[] name, bool dontBroadcast)
 	}
 }
 
-public Action OnUseEntity(int entity, int client, int caller, UseType type, float value)
+Action OnUseEntity(int entity, int client, int caller, UseType type, float value)
 {
 	if( entity > MaxClients && client && GetClientTeam(client) == 2 )
 	{
@@ -817,7 +788,7 @@ public Action OnUseEntity(int entity, int client, int caller, UseType type, floa
 	return Plugin_Continue;
 }
 
-public void OnFrameUnblock()
+void OnFrameUnblock()
 {
 	if( g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
 	{
@@ -826,7 +797,7 @@ public void OnFrameUnblock()
 	}
 }
 
-public Action TimerRemoveSoundHook(Handle timer)
+Action TimerRemoveSoundHook(Handle timer)
 {
 	if( g_bSoundHooked )
 	{
@@ -838,7 +809,7 @@ public Action TimerRemoveSoundHook(Handle timer)
 	return Plugin_Continue;
 }
 
-public void Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
+void Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
 {
 	if( g_fCvarFallTime && g_iCvarOpen != 1 )
 	{
@@ -851,21 +822,21 @@ public void Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
 	}
 }
 
-public void Event_PlayerSpawn(Event event, const char[] name, bool dontBroadcast)
+void Event_PlayerSpawn(Event event, const char[] name, bool dontBroadcast)
 {
 	if( g_iRoundStart == 1 && g_iPlayerSpawn == 0 )
 		InitPlugin();
 	g_iPlayerSpawn = 1;
 }
 
-public void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
+void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
 {
 	if( g_iRoundStart == 0 && g_iPlayerSpawn == 1 )
 		InitPlugin();
 	g_iRoundStart = 1;
 }
 
-public void Event_DoorOpen(Event event, const char[] name, bool dontBroadcast)
+void Event_DoorOpen(Event event, const char[] name, bool dontBroadcast)
 {
 	if( !g_bBlock && event.GetBool("checkpoint") )
 	{
@@ -874,7 +845,7 @@ public void Event_DoorOpen(Event event, const char[] name, bool dontBroadcast)
 	}
 }
 
-public void Event_DoorClose(Event event, const char[] name, bool dontBroadcast)
+void Event_DoorClose(Event event, const char[] name, bool dontBroadcast)
 {
 	if( !g_bBlock && event.GetBool("checkpoint") )
 		DoorPrint(event, false);
@@ -1123,7 +1094,7 @@ void MoveSideway(const float vPos[3], const float vAng[3], float vReturn[3], flo
 // ====================================================================================================
 //					AUTO FALL
 // ====================================================================================================
-public void ReadyToFallLockedDoor()
+void ReadyToFallLockedDoor()
 {
 	if( (g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch) || (g_bRestarted ? g_fCvarLock2 : g_fCvarLock) ) return;
 	if( !g_iLockedDoor || EntRefToEntIndex(g_iLockedDoor) == INVALID_ENT_REFERENCE ) return;
@@ -1132,7 +1103,7 @@ public void ReadyToFallLockedDoor()
 	g_hTimerFall = CreateTimer(g_fCvarFallTime, HandleAutoFallTimer, true, TIMER_FLAG_NO_MAPCHANGE);
 }
 
-public Action HandleAutoFallTimer(Handle timer, bool main)
+Action HandleAutoFallTimer(Handle timer, bool main)
 {
 	if( g_iCvarOpen != 1 && !g_bOpened && !g_bMapBlocked && g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
 	{
@@ -1170,7 +1141,7 @@ public Action HandleAutoFallTimer(Handle timer, bool main)
 	return Plugin_Continue;
 }
 
-public Action HandleAutoUnlock(Handle timer)
+Action HandleAutoUnlock(Handle timer)
 {
 	g_hTimerUnlock = null;
 
@@ -1199,12 +1170,12 @@ public Action HandleAutoUnlock(Handle timer)
 // ====================================================================================================
 //					DOOR FUNCTION
 // ====================================================================================================
-public void OnFirst(const char[] output, int entity, int activator, float delay)
+void OnFirst(const char[] output, int entity, int activator, float delay)
 {
 	// RequestFrame(OnFrameOpen, EntIndexToEntRef(entity));
 // }
 
-// public void OnFrameOpen(int entity)
+// void OnFrameOpen(int entity)
 // {
 	// entity = EntRefToEntIndex(entity);
 	// if( entity == INVALID_ENT_REFERENCE ) return;
@@ -1328,12 +1299,12 @@ public void OnFirst(const char[] output, int entity, int activator, float delay)
 		EmitSoundToAll(GetRandomInt(0, 1) ? SOUND_BREAK1 : SOUND_BREAK2, door);
 }
 
-public void OnClose(const char[] output, int entity, int activator, float delay)
+void OnClose(const char[] output, int entity, int activator, float delay)
 {
 	OnUseDoor(entity, false);
 }
 
-public void OnOpen(const char[] output, int entity, int activator, float delay)
+void OnOpen(const char[] output, int entity, int activator, float delay)
 {
 	OnUseDoor(entity, true);
 }
@@ -1362,7 +1333,7 @@ void OnUseDoor(int entity, bool open)
 	}
 }
 
-public Action TimeReset(Handle timer)
+Action TimeReset(Handle timer)
 {
 	if( g_iLastDoor && EntRefToEntIndex(g_iLastDoor) != INVALID_ENT_REFERENCE )
 	{
@@ -1374,7 +1345,7 @@ public Action TimeReset(Handle timer)
 	return Plugin_Continue;
 }
 
-public Action TimeResetFirst(Handle timer, int index)
+Action TimeResetFirst(Handle timer, int index)
 {
 	if( g_bTimer )
 	{
@@ -1393,12 +1364,12 @@ public Action TimeResetFirst(Handle timer, int index)
 /* OLD METHOD: Kept for demonstration purposes.
 bool g_bWatch;
 
-public void OnClose(const char[] output, int entity, int activator, float delay)
+void OnClose(const char[] output, int entity, int activator, float delay)
 {
 	OnUseDoor(false);
 }
 
-public void OnOpen(const char[] output, int entity, int activator, float delay)
+void OnOpen(const char[] output, int entity, int activator, float delay)
 {
 	OnUseDoor(true);
 }
@@ -1428,12 +1399,12 @@ void OnUseDoor(bool open)
 	}
 }
 
-public void OnFrame(bool open)
+void OnFrame(bool open)
 {
 	RequestFrame(open ? DoClose : DoOpen);
 }
 
-public void DoClose(int na) // "int na" to support compiling on SourceMod 1.8
+void DoClose(int na) // "int na" to support compiling on SourceMod 1.8
 {
 	if( g_fLastDoor > GetGameTime() )
 	{
@@ -1452,7 +1423,7 @@ public void DoClose(int na) // "int na" to support compiling on SourceMod 1.8
 	}
 }
 
-public void DoOpen(int na)
+void DoOpen(int na)
 {
 	if( g_fLastDoor > GetGameTime() )
 	{
