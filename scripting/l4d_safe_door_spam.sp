@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.24"
+#define PLUGIN_VERSION		"1.25"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,9 @@
 
 ========================================================================================
 	Change Log:
+
+1.25 (12-Aug-2022)
+	- Added cvar "l4d_safe_spam_hints" to control where to print the door locked countdown. Requested by "Erika Santos".
 
 1.24 (20-Jun-2022)
 	- Changed the "modes" cvars gamemode detection method to use "Left4DHooks" forwards and natives instead of creating an entity.
@@ -183,9 +186,9 @@
 #define MODEL_STANDM			"models/lighthouse/checkpoint_door_lighthouse01_metal.mdl"
 
 
-ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarGlow, g_hCvarHint, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarTouch, g_hCvarTouch2;
+ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarGlow, g_hCvarHint, g_hCvarHints, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarTouch, g_hCvarTouch2;
 bool g_bCvarAllow, g_bMapBlocked, g_bLeft4Dead2, g_bGameStart, g_bRestarted, g_bOpened, g_bTimer, g_bBlock;
-int g_iRoundStart, g_iPlayerSpawn, g_iLastDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastFlags, g_iCvarGlow, g_iCvarHint, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor, g_iHint[MAXPLAYERS+1];
+int g_iRoundStart, g_iPlayerSpawn, g_iLastDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastFlags, g_iCvarGlow, g_iCvarHint, g_iCvarHints, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor, g_iHint[MAXPLAYERS+1];
 float g_fLastDoor, g_fTimeLock, g_fTimeFall, g_fUseTime, g_fCvarPhysics, g_fCvarTimeClose, g_fCvarLock, g_fCvarLock2, g_fCvarTimeOpen, g_fCvarFallTime, g_fCvarTouch, g_fCvarTouch2;
 Handle g_hTimerFall, g_hLastTimer, g_hTimerUnlock;
 
@@ -267,6 +270,7 @@ public void OnPluginStart()
 	if( g_bLeft4Dead2 )
 		g_hCvarGlow =	CreateConVar(	"l4d_safe_spam_glow",			"255 0 0",		"0=Off. Three values between 0-255 separated by spaces. RGB Color255 - Red Green Blue.", CVAR_FLAGS);
 	g_hCvarHint =		CreateConVar(	"l4d_safe_spam_hint",			"3",			"0=Off. 1=Display a message showing who opened or closed the saferoom door. 2=Display a message when saferoom door is auto unlocked (_touch and _lock cvars). 3=Both.", CVAR_FLAGS);
+	g_hCvarHints =		CreateConVar(	"l4d_safe_spam_hints",			"1",			"Where should the countdown notifications display when attempting to open a locked door. 1=Chat. 2=Hint box.", CVAR_FLAGS);
 	g_hCvarLast =		CreateConVar(	"l4d_safe_spam_last",			"0",			"Final door state on round start: 0=Use map default. 1=Close last door. 2=Open last door.", CVAR_FLAGS);
 	g_hCvarLock =		CreateConVar(	"l4d_safe_spam_lock",			"30.0",			"0.0=Off. How many seconds after round start will the saferoom door remain locked.", CVAR_FLAGS);
 	g_hCvarLock2 =		CreateConVar(	"l4d_safe_spam_lock_2",			"10.0",			"0.0=Off. How many seconds after round start will the saferoom door remain locked. For the second+ round of a map.", CVAR_FLAGS);
@@ -295,6 +299,7 @@ public void OnPluginStart()
 	if( g_bLeft4Dead2 )
 		g_hCvarGlow.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarHint.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarHints.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarLast.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarPhysics.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarLock.AddChangeHook(ConVarChanged_Cvars);
@@ -381,6 +386,7 @@ void GetCvars()
 	if( g_bLeft4Dead2 )
 		g_iCvarGlow = GetColor(g_hCvarGlow);
 	g_iCvarHint = g_hCvarHint.IntValue;
+	g_iCvarHints = g_hCvarHints.IntValue;
 	g_iCvarLast = g_hCvarLast.IntValue;
 	g_fCvarPhysics = g_hCvarPhysics.FloatValue;
 	g_fCvarLock = g_hCvarLock.FloatValue;
@@ -708,11 +714,16 @@ Action OnUseEntity(int entity, int client, int caller, UseType type, float value
 				g_fUseTime = gametime;
 
 				float delay = g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch;
+
 				int secs = RoundToCeil(g_fTimeLock - gametime + delay);
 				if( secs != g_iHint[client] )
 				{
 					g_iHint[client] = secs;
-					CPrintToChat(client, "%T", "Door_Wait", client, secs);
+					switch( g_iCvarHints )
+					{
+						case 2: CPrintHintText(client, "%T", "Door_Wait", client, secs);
+						default: CPrintToChat(client, "%T", "Door_Wait", client, secs);
+					}
 				}
 			}
 		}
@@ -763,7 +774,12 @@ Action OnUseEntity(int entity, int client, int caller, UseType type, float value
 				if( secs != g_iHint[client] )
 				{
 					g_iHint[client] = secs;
-					CPrintToChat(client, "%T", "Door_Wait", client, secs);
+
+					switch( g_iCvarHints )
+					{
+						case 2: CPrintHintText(client, "%T", "Door_Wait", client, secs);
+						default: CPrintToChat(client, "%T", "Door_Wait", client, secs);
+					}
 				}
 			}
 		}
@@ -1461,4 +1477,19 @@ void CPrintToChat(int client, char[] message, any ...)
 	ReplaceString(buffer, sizeof(buffer), "{green}",		"\x04"); // Actually orange in L4D2, but replicating colors.inc behaviour
 	ReplaceString(buffer, sizeof(buffer), "{olive}",		"\x05");
 	PrintToChat(client, buffer);
+}
+
+void CPrintHintText(int client, char[] message, any ...)
+{
+	static char buffer[256];
+	VFormat(buffer, sizeof(buffer), message, 3);
+
+	ReplaceString(buffer, sizeof(buffer), "{default}",		"");
+	ReplaceString(buffer, sizeof(buffer), "{white}",		"");
+	ReplaceString(buffer, sizeof(buffer), "{cyan}",			"");
+	ReplaceString(buffer, sizeof(buffer), "{lightgreen}",	"");
+	ReplaceString(buffer, sizeof(buffer), "{orange}",		"");
+	ReplaceString(buffer, sizeof(buffer), "{green}",		""); // Actually orange in L4D2, but replicating colors.inc behaviour
+	ReplaceString(buffer, sizeof(buffer), "{olive}",		"");
+	PrintHintText(client, buffer);
 }
