@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.25"
+#define PLUGIN_VERSION		"1.26"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,12 @@
 
 ========================================================================================
 	Change Log:
+
+1.26 (28-Oct-2022)
+	- L4D1: Locked saferoom doors color are now set by the "l4d_safe_spam_glow" cvar.
+
+1.25a (27-Aug-2022)
+	- Added Traditional Chinese (zho) translations. Thanks to "in2002" for providing.
 
 1.25 (12-Aug-2022)
 	- Added cvar "l4d_safe_spam_hints" to control where to print the door locked countdown. Requested by "Erika Santos".
@@ -267,8 +273,7 @@ public void OnPluginStart()
 	g_hCvarModesOff =	CreateConVar(	"l4d_safe_spam_modes_off",		"",				"Turn off the plugin in these game modes, separate by commas (no spaces). (Empty = none).", CVAR_FLAGS);
 	g_hCvarModesTog =	CreateConVar(	"l4d_safe_spam_modes_tog",		"0",			"Turn on the plugin in these game modes. 0=All, 1=Coop, 2=Survival, 4=Versus, 8=Scavenge. Add numbers together.", CVAR_FLAGS);
 	g_hCvarFallTime =	CreateConVar(	"l4d_safe_spam_fall_time",		"10.0",			"0.0=Off. How many seconds after round start (or after unlocking by l4d_safe_spam_lock* and l4d_safe_spam_lock* cvars) until the locked saferoom door will automatically fall. Unless manually opened.", CVAR_FLAGS);
-	if( g_bLeft4Dead2 )
-		g_hCvarGlow =	CreateConVar(	"l4d_safe_spam_glow",			"255 0 0",		"0=Off. Three values between 0-255 separated by spaces. RGB Color255 - Red Green Blue.", CVAR_FLAGS);
+	g_hCvarGlow =		CreateConVar(	"l4d_safe_spam_glow",			"255 0 0",		"0=Off. Three values between 0-255 separated by spaces. RGB Color255 - Red Green Blue.", CVAR_FLAGS);
 	g_hCvarHint =		CreateConVar(	"l4d_safe_spam_hint",			"3",			"0=Off. 1=Display a message showing who opened or closed the saferoom door. 2=Display a message when saferoom door is auto unlocked (_touch and _lock cvars). 3=Both.", CVAR_FLAGS);
 	g_hCvarHints =		CreateConVar(	"l4d_safe_spam_hints",			"1",			"Where should the countdown notifications display when attempting to open a locked door. 1=Chat. 2=Hint box.", CVAR_FLAGS);
 	g_hCvarLast =		CreateConVar(	"l4d_safe_spam_last",			"0",			"Final door state on round start: 0=Use map default. 1=Close last door. 2=Open last door.", CVAR_FLAGS);
@@ -296,8 +301,7 @@ public void OnPluginStart()
 	g_hCvarFallTime.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarTouch.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarTouch2.AddChangeHook(ConVarChanged_Cvars);
-	if( g_bLeft4Dead2 )
-		g_hCvarGlow.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarGlow.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarHint.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarHints.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarLast.AddChangeHook(ConVarChanged_Cvars);
@@ -383,8 +387,7 @@ void GetCvars()
 {
 	int last = g_iCvarOpen;
 
-	if( g_bLeft4Dead2 )
-		g_iCvarGlow = GetColor(g_hCvarGlow);
+	g_iCvarGlow = GetColor(g_hCvarGlow);
 	g_iCvarHint = g_hCvarHint.IntValue;
 	g_iCvarHints = g_hCvarHints.IntValue;
 	g_iCvarLast = g_hCvarLast.IntValue;
@@ -991,11 +994,18 @@ void InitPlugin()
 
 		if( (g_bRestarted ? g_fCvarTouch2 : g_fCvarTouch) || (g_bRestarted ? g_fCvarLock2 : g_fCvarLock) )
 		{
-			if( g_iCvarGlow && g_bLeft4Dead2 )
+			if( g_iCvarGlow )
 			{
-				SetEntProp(entity, Prop_Send, "m_iGlowType", 3);
-				SetEntProp(entity, Prop_Send, "m_glowColorOverride", g_iCvarGlow);
-				SetEntProp(entity, Prop_Send, "m_nGlowRange", 9999);
+				if( g_bLeft4Dead2 )
+				{
+					SetEntProp(entity, Prop_Send, "m_iGlowType", 3);
+					SetEntProp(entity, Prop_Send, "m_glowColorOverride", g_iCvarGlow);
+					SetEntProp(entity, Prop_Send, "m_nGlowRange", 9999);
+				}
+				else
+				{
+					SetEntProp(entity, Prop_Send, "m_clrRender", g_iCvarGlow);
+				}
 			}
 
 			SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
@@ -1132,6 +1142,10 @@ Action HandleAutoFallTimer(Handle timer, bool main)
 			SetEntProp(g_iLockedDoor, Prop_Send, "m_glowColorOverride", 0);
 			AcceptEntityInput(g_iLockedDoor, "StopGlowing");
 		}
+		else
+		{
+			SetEntProp(g_iLockedDoor, Prop_Send, "m_clrRender", -1);
+		}
 
 		SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSED);
 		SDKUnhook(g_iLockedDoor, SDKHook_Use, OnUseEntity);
@@ -1171,6 +1185,10 @@ Action HandleAutoUnlock(Handle timer)
 		{
 			SetEntProp(g_iLockedDoor, Prop_Send, "m_glowColorOverride", 0);
 			AcceptEntityInput(g_iLockedDoor, "StopGlowing");
+		}
+		else
+		{
+			SetEntProp(g_iLockedDoor, Prop_Send, "m_clrRender", -1);
 		}
 
 		// Unlock
@@ -1222,6 +1240,10 @@ void OnFirst(const char[] output, int entity, int activator, float delay)
 		SetEntProp(entity, Prop_Send, "m_nGlowRange", 1);
 		SetEntProp(entity, Prop_Send, "m_glowColorOverride", 65025);
 		AcceptEntityInput(entity, "StopGlowing");
+	}
+	else
+	{
+		SetEntProp(entity, Prop_Send, "m_clrRender", -1);
 	}
 
 	// Make old door non-solid, so physics door does not collide and stutter
