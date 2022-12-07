@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.26"
+#define PLUGIN_VERSION		"1.27"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,9 @@
 
 ========================================================================================
 	Change Log:
+
+1.27 (07-Dec-2022)
+	- L4D1: Plugin no longer teleports the door. This is to prevent breaking the "player_entered_checkpoint" event.
 
 1.26 (28-Oct-2022)
 	- L4D1: Locked saferoom doors color are now set by the "l4d_safe_spam_glow" cvar.
@@ -1252,9 +1255,12 @@ void OnFirst(const char[] output, int entity, int activator, float delay)
 	SetEntProp(entity, Prop_Data, "m_CollisionGroup", 1);
 
 	// Teleport up to prevent using and door shadow showing. Must stay alive or L4D1 crashes.
-	vPos[2] += 10000.0;
-	TeleportEntity(entity, vPos, NULL_VECTOR, NULL_VECTOR);
-	vPos[2] -= 10000.0;
+	if( g_bLeft4Dead2 )
+	{
+		vPos[2] += 10000.0;
+		TeleportEntity(entity, vPos, NULL_VECTOR, NULL_VECTOR);
+		vPos[2] -= 10000.0;
+	}
 
 	// Hide old door
 	SetEntityRenderMode(entity, RENDER_TRANSALPHA);
