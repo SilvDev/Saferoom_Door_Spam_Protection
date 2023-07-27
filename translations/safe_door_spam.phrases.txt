@@ -19,4 +19,14 @@
 	{
 		"en"		"{olive}[Saferoom] {white}door {orange}opened"
 	}
+
+	"Movement_Blocked"
+	{
+		"en"		"{olive}Saferoom: {white}Movement allowed in %d"
+	}
+
+	"Movement_Allowed"
+	{
+		"en"		"{olive}Saferoom: {white}Movement allowed"
+	}
 }

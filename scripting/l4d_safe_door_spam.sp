@@ -1,6 +1,6 @@
 /*
 *	Saferoom Door Spam Protection
-*	Copyright (C) 2022 Silvers
+*	Copyright (C) 2023 Silvers
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.27"
+#define PLUGIN_VERSION		"1.28"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,10 @@
 
 ========================================================================================
 	Change Log:
+
+1.28 (27-Jul-2023)
+	- Added cvar "l4d_safe_spam_freeze" to freeze players on maps which have no starting saferoom. Requested by "etozhesandy".
+	- Translation file for English has been updated.
 
 1.27 (07-Dec-2022)
 	- L4D1: Plugin no longer teleports the door. This is to prevent breaking the "player_entered_checkpoint" event.
@@ -195,10 +199,10 @@
 #define MODEL_STANDM			"models/lighthouse/checkpoint_door_lighthouse01_metal.mdl"
 
 
-ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarGlow, g_hCvarHint, g_hCvarHints, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarTouch, g_hCvarTouch2;
-bool g_bCvarAllow, g_bMapBlocked, g_bLeft4Dead2, g_bGameStart, g_bRestarted, g_bOpened, g_bTimer, g_bBlock;
+ConVar g_hCvarAllow, g_hCvarMPGameMode, g_hCvarModes, g_hCvarModesOff, g_hCvarModesTog, g_hCvarFreeze, g_hCvarFreeze2, g_hCvarGlow, g_hCvarHint, g_hCvarHints, g_hCvarLast, g_hCvarOpen, g_hCvarSkin, g_hCvarPhysics, g_hCvarTimeClose, g_hCvarLock, g_hCvarLock2, g_hCvarTimeOpen, g_hCvarType, g_hCvarFallTime, g_hCvarTouch, g_hCvarTouch2;
+bool g_bCvarAllow, g_bCvarFreeze, g_bMapBlocked, g_bLeft4Dead2, g_bGameStart, g_bRestarted, g_bOpened, g_bTimer, g_bBlock;
 int g_iRoundStart, g_iPlayerSpawn, g_iLastDoor, g_iDoorType[2048], g_iFirstFlags, g_iLastFlags, g_iCvarGlow, g_iCvarHint, g_iCvarHints, g_iCvarLast, g_iCvarOpen, g_iCvarSkin, g_iCvarType, g_iLockedDoor, g_iHint[MAXPLAYERS+1];
-float g_fLastDoor, g_fTimeLock, g_fTimeFall, g_fUseTime, g_fCvarPhysics, g_fCvarTimeClose, g_fCvarLock, g_fCvarLock2, g_fCvarTimeOpen, g_fCvarFallTime, g_fCvarTouch, g_fCvarTouch2;
+float g_fLastDoor, g_fTimeLock, g_fTimeFall, g_fUseTime, g_fTimeFreeze, g_fCvarFreeze, g_fCvarPhysics, g_fCvarTimeClose, g_fCvarLock, g_fCvarLock2, g_fCvarTimeOpen, g_fCvarFallTime, g_fCvarTouch, g_fCvarTouch2;
 Handle g_hTimerFall, g_hLastTimer, g_hTimerUnlock;
 
 bool g_bSaferoomLocked; // Prevent forcing doors shut when another plugin is doing so. This prevents a recursive loop between the plugins causing a memory leak - This was prevalent in the old version using RequestFrame.
@@ -276,6 +280,8 @@ public void OnPluginStart()
 	g_hCvarModesOff =	CreateConVar(	"l4d_safe_spam_modes_off",		"",				"Turn off the plugin in these game modes, separate by commas (no spaces). (Empty = none).", CVAR_FLAGS);
 	g_hCvarModesTog =	CreateConVar(	"l4d_safe_spam_modes_tog",		"0",			"Turn on the plugin in these game modes. 0=All, 1=Coop, 2=Survival, 4=Versus, 8=Scavenge. Add numbers together.", CVAR_FLAGS);
 	g_hCvarFallTime =	CreateConVar(	"l4d_safe_spam_fall_time",		"10.0",			"0.0=Off. How many seconds after round start (or after unlocking by l4d_safe_spam_lock* and l4d_safe_spam_lock* cvars) until the locked saferoom door will automatically fall. Unless manually opened.", CVAR_FLAGS);
+	g_hCvarFreeze =		CreateConVar(	"l4d_safe_spam_freeze",			"0",			"0=Off. Any other value is the number of seconds to freeze Survivors on maps that begin without a saferoom. Also prevents players taking damage during this time.", CVAR_FLAGS);
+	g_hCvarFreeze2 =	CreateConVar(	"l4d_safe_spam_freeze2",		"1",			"0=Off. 1=Display a message showing the timer until movement is allowed.", CVAR_FLAGS);
 	g_hCvarGlow =		CreateConVar(	"l4d_safe_spam_glow",			"255 0 0",		"0=Off. Three values between 0-255 separated by spaces. RGB Color255 - Red Green Blue.", CVAR_FLAGS);
 	g_hCvarHint =		CreateConVar(	"l4d_safe_spam_hint",			"3",			"0=Off. 1=Display a message showing who opened or closed the saferoom door. 2=Display a message when saferoom door is auto unlocked (_touch and _lock cvars). 3=Both.", CVAR_FLAGS);
 	g_hCvarHints =		CreateConVar(	"l4d_safe_spam_hints",			"1",			"Where should the countdown notifications display when attempting to open a locked door. 1=Chat. 2=Hint box.", CVAR_FLAGS);
@@ -304,6 +310,8 @@ public void OnPluginStart()
 	g_hCvarFallTime.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarTouch.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarTouch2.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarFreeze.AddChangeHook(ConVarChanged_Cvars);
+	g_hCvarFreeze2.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarGlow.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarHint.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarHints.AddChangeHook(ConVarChanged_Cvars);
@@ -390,6 +398,8 @@ void GetCvars()
 {
 	int last = g_iCvarOpen;
 
+	g_fCvarFreeze = g_hCvarFreeze.FloatValue;
+	g_bCvarFreeze = g_hCvarFreeze2.BoolValue;
 	g_iCvarGlow = GetColor(g_hCvarGlow);
 	g_iCvarHint = g_hCvarHint.IntValue;
 	g_iCvarHints = g_hCvarHints.IntValue;
@@ -842,6 +852,16 @@ void Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
 			ReadyToFallLockedDoor();
 		}
 	}
+
+	if( g_fCvarFreeze )
+	{
+		if( event.GetInt("oldteam") == 2 )
+		{
+			int client = GetClientOfUserId(event.GetInt("userid"));
+			SetEntityMoveType(client, MOVETYPE_WALK);
+			SetEntProp(client, Prop_Data, "m_takedamage", 2);
+		}
+	}
 }
 
 void Event_PlayerSpawn(Event event, const char[] name, bool dontBroadcast)
@@ -1024,6 +1044,13 @@ void InitPlugin()
 		}
 	} else {
 		g_iLockedDoor = 0;
+
+		if( g_fCvarFreeze )
+		{
+			g_fTimeFreeze = GetGameTime() + g_fCvarFreeze;
+			CreateTimer(1.0, TimerFreeze, _, TIMER_REPEAT);
+			
+		}
 	}
 
 
@@ -1116,6 +1143,47 @@ void MoveSideway(const float vPos[3], const float vAng[3], float vReturn[3], flo
 	vReturn = vPos;
 	vReturn[0] += vDir[0] * fDistance;
 	vReturn[1] += vDir[1] * fDistance;
+}
+
+Action TimerFreeze(Handle timer)
+{
+	if( GetGameTime() < g_fTimeFreeze )
+	{
+		for( int i = 1; i <= MaxClients; i++ )
+		{
+			if( IsClientInGame(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i) )
+			{
+				if( g_bCvarFreeze )
+				{
+					CPrintHintText(i, "%T", "Movement_Blocked", i, RoundFloat(g_fTimeFreeze - GetGameTime()));
+				}
+
+				SetEntProp(i, Prop_Data, "m_takedamage", 0);
+				SetEntityMoveType(i, MOVETYPE_NONE);
+				TeleportEntity(i, NULL_VECTOR, NULL_VECTOR, view_as<float>({0.0, 0.0, 0.0})); // Stops constant running animation if moving when setting movetype to none.
+			}
+		}
+
+		return Plugin_Continue;
+	}
+	else
+	{
+		for( int i = 1; i <= MaxClients; i++ )
+		{
+			if( IsClientInGame(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i) )
+			{
+				if( g_bCvarFreeze && GetEntityMoveType(i) == MOVETYPE_NONE )
+				{
+					CPrintHintText(i, "%T", "Movement_Allowed", i);
+				}
+
+				SetEntityMoveType(i, MOVETYPE_WALK);
+				SetEntProp(i, Prop_Data, "m_takedamage", 2);
+			}
+		}
+	}
+
+	return Plugin_Stop;
 }
 
 
