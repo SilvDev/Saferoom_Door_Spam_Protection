@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.28"
+#define PLUGIN_VERSION		"1.29"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,9 @@
 
 ========================================================================================
 	Change Log:
+
+1.29 (20-Dec-2023)
+	- Delays showing the movement blocked message during campaign intros. Thanks to "Hawkins" for adding.
 
 1.28 (27-Jul-2023)
 	- Added cvar "l4d_safe_spam_freeze" to freeze players on maps which have no starting saferoom. Requested by "etozhesandy".
@@ -1151,7 +1154,7 @@ Action TimerFreeze(Handle timer)
 	{
 		for( int i = 1; i <= MaxClients; i++ )
 		{
-			if( IsClientInGame(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i) )
+			if( IsClientInGame(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i) && (GetEntPropEnt(i, Prop_Send, "m_hViewEntity") == -1) )
 			{
 				if( g_bCvarFreeze )
 				{
