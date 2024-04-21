@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.30"
+#define PLUGIN_VERSION		"1.31"
 
 /*=======================================================================================
 	Plugin Info:
@@ -32,8 +32,14 @@
 ========================================================================================
 	Change Log:
 
+1.31 (21-Apr-2024)
+	- Fixed the saferoom door locking after opening due to player spam.
+	- Fixed rare bug where the saferoom door would not fall.
+	- Thanks to "Picola" for reporting and testing.
+
 1.30 (10-Jan-2024)
 	- Fixed the "l4d_safe_spam_modes_tog" cvar detecting Versus and Survival modes incorrectly.
+	- Added Simplified Chinese (chi) translations. Thanks to "CIKK" for providing.
 
 1.29 (20-Dec-2023)
 	- Delays showing the movement blocked message during campaign intros. Thanks to "Hawkins" for adding.
@@ -333,7 +339,7 @@ public void OnPluginStart()
 	g_hCvarType.AddChangeHook(ConVarChanged_Cvars);
 
 	RegAdminCmd("sm_door_drop", CmdDoorDrop, ADMFLAG_ROOT, "Test command to make a targeted door fall over (will likely only work correctly on Saferoom doors).");
-	RegAdminCmd("sm_door_fall", CmdDoorLast, ADMFLAG_ROOT, "Test command to make the first locked saferoom door fall over.");
+	RegAdminCmd("sm_door_fall", CmdDoorFall, ADMFLAG_ROOT, "Test command to make the first locked saferoom door fall over.");
 }
 
 Action CmdDoorDrop(int client, int args)
@@ -354,7 +360,7 @@ Action CmdDoorDrop(int client, int args)
 	return Plugin_Handled;
 }
 
-Action CmdDoorLast(int client, int args)
+Action CmdDoorFall(int client, int args)
 {
 	if( g_iLockedDoor == -1 || EntRefToEntIndex(g_iLockedDoor) == INVALID_ENT_REFERENCE )
 	{
@@ -365,7 +371,7 @@ Action CmdDoorLast(int client, int args)
 	g_bBlock = false;
 	OnFirst("", g_iLockedDoor, 0, 0.0);
 
-	ReplyToCommand(client, "Locked door %d dropped", g_iLockedDoor);
+	ReplyToCommand(client, "Locked door %d dropped", EntRefToEntIndex(g_iLockedDoor));
 
 	return Plugin_Handled;
 }
@@ -598,7 +604,7 @@ public void OnMapStart()
 
 	if( g_bLeft4Dead2 )
 	{
-		char sMap[10];
+		char sMap[8];
 		GetCurrentMap(sMap, sizeof(sMap));
 
 		if( strcmp(sMap, "qe2_ep2") == 0 )
@@ -840,8 +846,9 @@ Action OnUseEntity(int entity, int client, int caller, UseType type, float value
 
 void OnFrameUnblock()
 {
-	if( g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
+	if( !g_bOpened && g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
 	{
+		// Unlock
 		SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSED);
 		SetEntProp(g_iLockedDoor, Prop_Send, "m_spawnflags", g_iFirstFlags);
 	}
@@ -861,10 +868,10 @@ Action TimerRemoveSoundHook(Handle timer)
 
 void Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
 {
-	if( g_fCvarFallTime && g_iCvarOpen != 1 )
+	if( g_fCvarFallTime && g_iCvarOpen != 1 && !g_bGameStart )
 	{
 		int team = event.GetInt("team");
-		if( team == 2 && !g_bGameStart )
+		if( team == 2 )
 		{
 			g_bGameStart = true; // Game is ready to start.
 			ReadyToFallLockedDoor();
@@ -900,8 +907,8 @@ void Event_DoorOpen(Event event, const char[] name, bool dontBroadcast)
 {
 	if( !g_bBlock && event.GetBool("checkpoint") )
 	{
-		DoorPrint(event, true);
 		g_bOpened = true;
+		DoorPrint(event, true);
 	}
 }
 
@@ -949,9 +956,6 @@ void InitPlugin()
 
 	if( g_iLockedDoor == -1 ) g_iLockedDoor = 0;
 	if( g_iLastDoor == -1 ) g_iLastDoor = 0;
-
-// PrintToServer("SAFE_SPAM A %d", g_iLockedDoor);
-// PrintToServer("SAFE_SPAM B %d", g_iLastDoor);
 
 	// First saferoom door
 	if( g_iLockedDoor && GetEntProp(g_iLockedDoor, Prop_Send, "m_bLocked") == 1 )
@@ -1220,7 +1224,7 @@ void ReadyToFallLockedDoor()
 
 Action HandleAutoFallTimer(Handle timer, bool main)
 {
-	if( g_iCvarOpen != 1 && !g_bOpened && !g_bMapBlocked && g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
+	if( !g_bOpened && !g_bMapBlocked && g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
 	{
 		g_bTimer = false;
 		g_bBlock = false;
@@ -1236,8 +1240,6 @@ Action HandleAutoFallTimer(Handle timer, bool main)
 			SetEntProp(g_iLockedDoor, Prop_Send, "m_clrRender", -1);
 		}
 
-		SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSED);
-		SDKUnhook(g_iLockedDoor, SDKHook_Use, OnUseEntity);
 
 		if( !main && g_iCvarHint & 2 )
 		{
@@ -1250,9 +1252,16 @@ Action HandleAutoFallTimer(Handle timer, bool main)
 			}
 		}
 
-		OnFirst("", g_iLockedDoor, 0, 0.0);
+		if( g_iCvarOpen != 1 )
+		{
+			// Unlock
+			SetEntProp(g_iLockedDoor, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSED);
+			SDKUnhook(g_iLockedDoor, SDKHook_Use, OnUseEntity);
 
-		delete g_hTimerUnlock;
+			OnFirst("", g_iLockedDoor, 0, 0.0);
+
+			delete g_hTimerUnlock;
+		}
 	}
 
 	g_hTimerFall = null;
@@ -1264,7 +1273,7 @@ Action HandleAutoUnlock(Handle timer)
 {
 	g_hTimerUnlock = null;
 
-	if( g_iCvarOpen != 1 && !g_bOpened && !g_bMapBlocked && g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
+	if( !g_bOpened && !g_bMapBlocked && g_iLockedDoor && EntRefToEntIndex(g_iLockedDoor) != INVALID_ENT_REFERENCE )
 	{
 		g_bTimer = false;
 		g_bBlock = false;
@@ -1315,14 +1324,6 @@ void OnFirst(const char[] output, int entity, int activator, float delay)
 
 	g_bOpened = true;
 
-	char sModel[64];
-	GetEntPropString(entity, Prop_Data, "m_ModelName", sModel, sizeof(sModel));
-
-	float vPos[3], vAng[3], vDir[3];
-	GetEntPropVector(entity, Prop_Data, "m_vecAbsOrigin", vPos);
-	GetEntPropVector(entity, Prop_Send, "m_angRotation", vAng);
-	// GetEntPropVector(entity, Prop_Data, "m_angRotationOpenForward", vDir);
-
 	// Remove Glow
 	if( g_bLeft4Dead2 )
 	{
@@ -1339,6 +1340,39 @@ void OnFirst(const char[] output, int entity, int activator, float delay)
 	// Collison group fixes "in solid list (not solid)"
 	SetEntProp(entity, Prop_Send, "m_CollisionGroup", 1);
 	SetEntProp(entity, Prop_Data, "m_CollisionGroup", 1);
+
+	// Handle fall animation from old door
+	SetVariantString("unlock");
+	AcceptEntityInput(entity, "SetAnimation");
+
+	SetEntProp(entity, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
+	SetEntProp(entity, Prop_Send, "m_spawnflags", DOOR_FLAG_SILENT|DOOR_FLAG_IGNORE_USE); // Prevent +USE + Door silent
+
+	// Wait for handle to fall (does not work for wooden handle - Last Stand: TODO FIXME) - deleting crashes in L4D1 so keeping it alive.
+	// SetVariantString("OnUser4 !self:Kill::1.0:1");
+	// AcceptEntityInput(entity, "AddOutput");
+	// AcceptEntityInput(entity, "FireUser4");
+
+	entity = entity < 0 ? entity : EntIndexToEntRef(entity);
+
+	if( activator )
+		TimerDoorFall(null, entity);
+	else
+		CreateTimer(0.5, TimerDoorFall, entity);
+}
+
+Action TimerDoorFall(Handle timer, int entity)
+{
+	entity = EntRefToEntIndex(entity);
+	if( entity == INVALID_ENT_REFERENCE ) return Plugin_Continue;
+
+	char sModel[64];
+	GetEntPropString(entity, Prop_Data, "m_ModelName", sModel, sizeof(sModel));
+
+	float vPos[3], vAng[3], vDir[3];
+	GetEntPropVector(entity, Prop_Data, "m_vecAbsOrigin", vPos);
+	GetEntPropVector(entity, Prop_Send, "m_angRotation", vAng);
+	// GetEntPropVector(entity, Prop_Data, "m_angRotationOpenForward", vDir);
 
 	// Teleport up to prevent using and door shadow showing. Must stay alive or L4D1 crashes.
 	if( g_bLeft4Dead2 )
@@ -1373,18 +1407,6 @@ void OnFirst(const char[] output, int entity, int activator, float delay)
 		AcceptEntityInput(door, "AddOutput");
 		AcceptEntityInput(door, "FireUser1");
 	}
-
-	// Handle fall animation from old door
-	SetVariantString("unlock");
-	AcceptEntityInput(entity, "SetAnimation");
-
-	SetEntProp(entity, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
-	SetEntProp(entity, Prop_Send, "m_spawnflags", DOOR_FLAG_SILENT|DOOR_FLAG_IGNORE_USE); // Prevent +USE + Door silent
-
-	// Wait for handle to fall (does not work for wooden handle - Last Stand: TODO FIXME) - deleting crashes in L4D1 so keeping it alive.
-	// SetVariantString("OnUser4 !self:Kill::1.0:1");
-	// AcceptEntityInput(entity, "AddOutput");
-	// AcceptEntityInput(entity, "FireUser4");
 
 	// Find attachments, swap to our new door
 	entity = EntRefToEntIndex(entity);
@@ -1427,6 +1449,8 @@ void OnFirst(const char[] output, int entity, int activator, float delay)
 		EmitSoundToAll(GetRandomInt(0, 1) ? SOUND_BREAK3 : SOUND_BREAK4, door);
 	else
 		EmitSoundToAll(GetRandomInt(0, 1) ? SOUND_BREAK1 : SOUND_BREAK2, door);
+
+	return Plugin_Continue;
 }
 
 void OnClose(const char[] output, int entity, int activator, float delay)
@@ -1445,11 +1469,11 @@ void OnUseDoor(int entity, bool open)
 	if( g_bSaferoomLocked )
 		return;
 
-	if( !g_iLastDoor || EntRefToEntIndex(g_iLastDoor) != entity )
-		return;
-
 	// Timer already blocking
 	if( g_hLastTimer != null )
+		return;
+
+	if( !g_iLastDoor || EntRefToEntIndex(g_iLastDoor) != entity )
 		return;
 
 	// Block open/close
