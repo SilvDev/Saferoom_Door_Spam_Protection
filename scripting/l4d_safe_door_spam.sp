@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION		"1.31"
+#define PLUGIN_VERSION		"1.32"
 
 /*=======================================================================================
 	Plugin Info:
@@ -31,6 +31,9 @@
 
 ========================================================================================
 	Change Log:
+
+1.32 (05-Nov-2024)
+	- Changed cvar "l4d_safe_spam_open" to allow automatic first saferoom door opening without falling. Requested by "Slaven555".
 
 1.31 (21-Apr-2024)
 	- Fixed the saferoom door locking after opening due to player spam.
@@ -300,14 +303,14 @@ public void OnPluginStart()
 	g_hCvarLast =		CreateConVar(	"l4d_safe_spam_last",			"0",			"Final door state on round start: 0=Use map default. 1=Close last door. 2=Open last door.", CVAR_FLAGS);
 	g_hCvarLock =		CreateConVar(	"l4d_safe_spam_lock",			"30.0",			"0.0=Off. How many seconds after round start will the saferoom door remain locked.", CVAR_FLAGS);
 	g_hCvarLock2 =		CreateConVar(	"l4d_safe_spam_lock_2",			"10.0",			"0.0=Off. How many seconds after round start will the saferoom door remain locked. For the second+ round of a map.", CVAR_FLAGS);
-	g_hCvarTouch =		CreateConVar(	"l4d_safe_spam_touch",			"0.0",			"0.0=Off. How many seconds after attempting to open the locked saferoom door until it will unlock (overrides the _time cvar).", CVAR_FLAGS);
-	g_hCvarTouch2 =		CreateConVar(	"l4d_safe_spam_touch_2",		"0.0",			"0.0=Off. How many seconds after attempting to open the locked saferoom door until it will unlock (overrides the _time cvar). For the second+ round of a map.", CVAR_FLAGS);
-	g_hCvarOpen =		CreateConVar(	"l4d_safe_spam_open",			"2",			"0=Off, 1=Keep the first saferoom door open once opened, 2=Make the first saferoom door fall once opened.", CVAR_FLAGS);
+	g_hCvarOpen =		CreateConVar(	"l4d_safe_spam_open",			"2",			"0=Off, 1=Keep the first saferoom door open and prevent closing, 2=Make the first saferoom door fall once opened, 3=Automatically open without falling after l4d_safe_spam_fall_time seconds, 4=Auto open and prevent closing again.", CVAR_FLAGS);
 	g_hCvarPhysics =	CreateConVar(	"l4d_safe_spam_physics",		"3.0",			"0.0=Always has physics. How many seconds until the fallen doors physics are disabled.", CVAR_FLAGS);
 	if( g_bLeft4Dead2 )
 		g_hCvarSkin =	CreateConVar(	"l4d_safe_spam_skin",			"0",			"0=Map default. 1=Classic. 2=Last Stand. Which door model to use on the first and last saferooms.", CVAR_FLAGS);
 	g_hCvarTimeClose =	CreateConVar(	"l4d_safe_spam_time_close",		"1.0",			"How many seconds to block after closing the last saferoom door.", CVAR_FLAGS);
 	g_hCvarTimeOpen =	CreateConVar(	"l4d_safe_spam_time_open",		"3.0",			"How many seconds to block after opening the last saferoom door.", CVAR_FLAGS);
+	g_hCvarTouch =		CreateConVar(	"l4d_safe_spam_touch",			"0.0",			"0.0=Off. How many seconds after attempting to open the locked saferoom door until it will unlock (overrides the _time cvar).", CVAR_FLAGS);
+	g_hCvarTouch2 =		CreateConVar(	"l4d_safe_spam_touch_2",		"0.0",			"0.0=Off. How many seconds after attempting to open the locked saferoom door until it will unlock (overrides the _time cvar). For the second+ round of a map.", CVAR_FLAGS);
 	g_hCvarType =		CreateConVar(	"l4d_safe_spam_type",			"3",			"0=Off. When the last saferoom door is used enable the timeout on: 1=Open, 2=Close, 3=Both.", CVAR_FLAGS);
 
 	CreateConVar(						"l4d_safe_spam_version",		PLUGIN_VERSION,	"Saferoom Door Spam Protection plugin version",	FCVAR_NOTIFY|FCVAR_DONTRECORD);
@@ -1028,7 +1031,7 @@ void InitPlugin()
 		// Hooks for opening and closing, preventing open on round start
 		if( g_iCvarOpen && !g_bMapBlocked )
 		{
-			if( g_iCvarOpen == 1 )
+			if( g_iCvarOpen == 1 || g_iCvarOpen == 4 )
 			{
 				SetVariantString("OnOpen !self:Lock::0.0:-1");
 				AcceptEntityInput(g_iLockedDoor, "AddOutput");
@@ -1336,14 +1339,26 @@ void OnFirst(const char[] output, int entity, int activator, float delay)
 		SetEntProp(entity, Prop_Send, "m_clrRender", -1);
 	}
 
+	// Handle fall animation from old door
+	SetVariantString("unlock");
+	AcceptEntityInput(entity, "SetAnimation");
+
+	UnhookSingleEntityOutput(entity, "OnOpen", OnFirst);
+
+	entity = entity < 0 ? entity : EntIndexToEntRef(entity);
+
+	// Auto open without falling
+	if( g_iCvarOpen >= 3 )
+	{
+		// Must delay opening so the handle falls and stays visible
+		CreateTimer(0.5, TimerDoorOpen, entity);
+		return;
+	}
+
 	// Make old door non-solid, so physics door does not collide and stutter
 	// Collison group fixes "in solid list (not solid)"
 	SetEntProp(entity, Prop_Send, "m_CollisionGroup", 1);
 	SetEntProp(entity, Prop_Data, "m_CollisionGroup", 1);
-
-	// Handle fall animation from old door
-	SetVariantString("unlock");
-	AcceptEntityInput(entity, "SetAnimation");
 
 	SetEntProp(entity, Prop_Send, "m_eDoorState", DOOR_STATE_CLOSING_IN_PROGRESS);
 	SetEntProp(entity, Prop_Send, "m_spawnflags", DOOR_FLAG_SILENT|DOOR_FLAG_IGNORE_USE); // Prevent +USE + Door silent
@@ -1353,12 +1368,21 @@ void OnFirst(const char[] output, int entity, int activator, float delay)
 	// AcceptEntityInput(entity, "AddOutput");
 	// AcceptEntityInput(entity, "FireUser4");
 
-	entity = entity < 0 ? entity : EntIndexToEntRef(entity);
-
 	if( activator )
 		TimerDoorFall(null, entity);
 	else
 		CreateTimer(0.5, TimerDoorFall, entity);
+}
+
+Action TimerDoorOpen(Handle timer, int entity)
+{
+	entity = EntRefToEntIndex(entity);
+	if( entity == INVALID_ENT_REFERENCE ) return Plugin_Continue;
+
+	AcceptEntityInput(entity, "Unlock");
+	AcceptEntityInput(entity, "Open");
+
+	return Plugin_Continue;
 }
 
 Action TimerDoorFall(Handle timer, int entity)
@@ -1369,6 +1393,7 @@ Action TimerDoorFall(Handle timer, int entity)
 	char sModel[64];
 	GetEntPropString(entity, Prop_Data, "m_ModelName", sModel, sizeof(sModel));
 
+	// Deleting crashes the game in L4D1.. so instead we'll keep it alive (but invisible and non-solid)
 	float vPos[3], vAng[3], vDir[3];
 	GetEntPropVector(entity, Prop_Data, "m_vecAbsOrigin", vPos);
 	GetEntPropVector(entity, Prop_Send, "m_angRotation", vAng);
@@ -1385,9 +1410,6 @@ Action TimerDoorFall(Handle timer, int entity)
 	// Hide old door
 	SetEntityRenderMode(entity, RENDER_TRANSALPHA);
 	SetEntityRenderColor(entity, 0, 0, 0, 0);
-
-	// Deleting crashes the game in L4D1.. so instead we'll keep it alive (but invisible and non-solid) and unhook.
-	UnhookSingleEntityOutput(entity, "OnOpen", OnFirst);
 
 	// Create new physics door
 	int door = CreateEntityByName("prop_physics");
